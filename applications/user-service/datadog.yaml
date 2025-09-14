@@ -1,0 +1,15 @@
+init_config:
+
+instances:
+  - host: localhost
+    port: 3000
+    
+logs:
+  - type: file
+    path: /app/logs/*.log
+    service: user-service
+    source: nodejs
+    
+apm_config:
+  enabled: true
+  env: production
