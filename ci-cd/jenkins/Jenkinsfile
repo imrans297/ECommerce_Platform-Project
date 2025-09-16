@@ -73,12 +73,14 @@ pipeline {
                         sh '''
                             # Install Trivy if not present
                             if ! command -v trivy &> /dev/null; then
-                                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+                                mkdir -p ./bin
+                                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin
+                                export PATH=$PATH:$(pwd)/bin
                             fi
                             
                             # Scan filesystem for vulnerabilities
-                            trivy fs --format json --output trivy-report.json applications/ || echo "Trivy scan completed with warnings"
-                            trivy fs --format table applications/ || echo "Trivy table scan completed"
+                            ./bin/trivy fs --format json --output trivy-report.json applications/ || echo "Trivy scan completed with warnings"
+                            ./bin/trivy fs --format table applications/ || echo "Trivy table scan completed"
                         '''
                     }
                 }
