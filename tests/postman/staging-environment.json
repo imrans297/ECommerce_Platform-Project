@@ -1,0 +1,21 @@
+{
+  "id": "staging-env",
+  "name": "Staging Environment",
+  "values": [
+    {
+      "key": "BASE_URL",
+      "value": "http://staging-lb.ecommerce.local",
+      "enabled": true
+    },
+    {
+      "key": "USER_SERVICE_URL",
+      "value": "http://user-service.staging.svc.cluster.local:3000",
+      "enabled": true
+    },
+    {
+      "key": "PRODUCT_SERVICE_URL", 
+      "value": "http://product-service.staging.svc.cluster.local:5000",
+      "enabled": true
+    }
+  ]
+}

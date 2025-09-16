@@ -1,0 +1,64 @@
+{
+  "title": "E-commerce Platform Dashboard",
+  "description": "Comprehensive monitoring for microservices platform",
+  "widgets": [
+    {
+      "definition": {
+        "title": "Service Health Overview",
+        "type": "check_status",
+        "check": "http_check",
+        "grouping": "cluster",
+        "group_by": ["service"],
+        "tags": ["env:production"]
+      }
+    },
+    {
+      "definition": {
+        "title": "Request Rate by Service",
+        "type": "timeseries",
+        "requests": [
+          {
+            "q": "sum:trace.http.request.hits{env:production} by {service}.as_rate()",
+            "display_type": "line"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "title": "Response Time P95",
+        "type": "timeseries", 
+        "requests": [
+          {
+            "q": "p95:trace.http.request.duration{env:production} by {service}",
+            "display_type": "line"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "title": "Error Rate",
+        "type": "timeseries",
+        "requests": [
+          {
+            "q": "sum:trace.http.request.errors{env:production} by {service}.as_rate()",
+            "display_type": "line"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "title": "Infrastructure Metrics",
+        "type": "timeseries",
+        "requests": [
+          {
+            "q": "avg:kubernetes.cpu.usage.total{cluster_name:ecommerce-platform} by {pod_name}",
+            "display_type": "line"
+          }
+        ]
+      }
+    }
+  ]
+}

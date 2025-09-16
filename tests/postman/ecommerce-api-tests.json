@@ -1,0 +1,38 @@
+{
+  "info": {
+    "name": "E-commerce API Tests",
+    "description": "Integration tests for microservices",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "User Service Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE_URL}}/health",
+          "host": ["{{BASE_URL}}"],
+          "path": ["health"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('Service is healthy', function () {",
+              "    const response = pm.response.json();",
+              "    pm.expect(response.status).to.eql('healthy');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+global:
+  registry: "your-ecr-registry"
+  tag: "latest"
+
+userService:
+  image: user-service
+  port: 3000
+  replicas: 3
+
+productService:
+  image: product-service
+  port: 5000
+  replicas: 3
+
+orderService:
+  image: order-service
+  port: 8080
+  replicas: 3
+
+notificationService:
+  image: notification-service
+  port: 9000
+  replicas: 2

@@ -1,0 +1,75 @@
+---
+- name: Configure EKS Nodes
+  hosts: eks_nodes
+  become: yes
+  vars:
+    containerd_version: "1.6.*"
+    
+  tasks:
+    - name: Update system packages
+      yum:
+        name: "*"
+        state: latest
+        update_cache: yes
+        
+    - name: Install required packages
+      yum:
+        name:
+          - containerd
+          - aws-cli
+          - kubectl
+          - docker
+        state: present
+        
+    - name: Configure containerd
+      copy:
+        content: |
+          version = 2
+          [plugins."io.containerd.grpc.v1.cri"]
+            [plugins."io.containerd.grpc.v1.cri".containerd]
+              [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+                [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+                  runtime_type = "io.containerd.runc.v2"
+        dest: /etc/containerd/config.toml
+      notify: restart containerd
+        
+    - name: Start and enable containerd
+      systemd:
+        name: containerd
+        state: started
+        enabled: yes
+        
+    - name: Start and enable Docker (for Jenkins agents)
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+        
+    - name: Install DataDog agent
+      shell: |
+        DD_API_KEY=34334c18a88c731298c733ac5122e9e8 \
+        DD_SITE="datadoghq.com" \
+        bash -c "$(curl -L https://s3.amazonaws.com/dd-agent/scripts/install_script.sh)"
+      args:
+        creates: /etc/datadog-agent/datadog.yaml
+        
+    - name: Configure DataDog agent
+      lineinfile:
+        path: /etc/datadog-agent/datadog.yaml
+        regexp: '^# tags:'
+        line: 'tags: ["env:dev", "service:eks-node", "project:ecommerce-platform"]'
+      notify: restart datadog-agent
+        
+    - name: Configure security hardening
+      include_tasks: security.yml
+      
+  handlers:
+    - name: restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+        
+    - name: restart datadog-agent
+      systemd:
+        name: datadog-agent
+        state: restarted

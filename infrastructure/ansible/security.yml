@@ -1,0 +1,70 @@
+---
+# Security hardening tasks for EKS nodes
+- name: Configure SSH security
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  with_items:
+    - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+    - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+    - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+    - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
+  notify: restart sshd
+
+- name: Install fail2ban
+  yum:
+    name: fail2ban
+    state: present
+
+- name: Configure fail2ban
+  copy:
+    content: |
+      [DEFAULT]
+      bantime = 3600
+      findtime = 600
+      maxretry = 3
+      
+      [sshd]
+      enabled = true
+      port = ssh
+      logpath = /var/log/secure
+      maxretry = 3
+    dest: /etc/fail2ban/jail.local
+  notify: restart fail2ban
+
+- name: Start and enable fail2ban
+  systemd:
+    name: fail2ban
+    state: started
+    enabled: yes
+
+- name: Configure firewall rules
+  firewalld:
+    service: "{{ item }}"
+    permanent: yes
+    state: enabled
+    immediate: yes
+  with_items:
+    - ssh
+    - https
+  ignore_errors: yes
+
+- name: Set file permissions
+  file:
+    path: "{{ item }}"
+    mode: '0600'
+  with_items:
+    - /etc/ssh/sshd_config
+    - /etc/sudoers
+
+handlers:
+  - name: restart sshd
+    systemd:
+      name: sshd
+      state: restarted
+      
+  - name: restart fail2ban
+    systemd:
+      name: fail2ban
+      state: restarted

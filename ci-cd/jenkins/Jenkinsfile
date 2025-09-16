@@ -1,0 +1,453 @@
+pipeline {
+    agent any
+    
+    environment {
+        AWS_REGION = 'us-east-1'
+        ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
+        CLUSTER_NAME = 'ecommerce-platform-dev-eks'
+        SONAR_PROJECT_KEY = 'ecommerce-platform'
+        SLACK_CHANNEL = '#devops-alerts'
+    }
+    
+    tools {
+        nodejs '18'
+        maven '3.9'
+        go '1.21'
+    }
+    
+    stages {
+        stage('🔄 Checkout & Setup') {
+            steps {
+                checkout scm
+                script {
+                    env.BUILD_VERSION = "${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
+                    env.AWS_ACCOUNT_ID = sh(
+                        script: 'aws sts get-caller-identity --query Account --output text',
+                        returnStdout: true
+                    ).trim()
+                }
+                echo "Building version: ${env.BUILD_VERSION}"
+            }
+        }
+        
+        stage('🔍 Code Quality & Security') {
+            parallel {
+                stage('SonarQube Analysis') {
+                    steps {
+                        script {
+                            def scannerHome = tool 'SonarQubeScanner'
+                            withSonarQubeEnv('SonarQube') {
+                                sh """
+                                    ${scannerHome}/bin/sonar-scanner \
+                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                    -Dsonar.sources=applications/ \
+                                    -Dsonar.exclusions=**/node_modules/**,**/target/**,**/*.test.js \
+                                    -Dsonar.javascript.lcov.reportPaths=applications/*/coverage/lcov.info \
+                                    -Dsonar.java.binaries=applications/order-service/target/classes
+                                """
+                            }
+                        }
+                    }
+                }
+                
+                stage('OWASP Dependency Check') {
+                    steps {
+                        dependencyCheck additionalArguments: '''
+                            --scan applications/
+                            --format XML
+                            --format HTML
+                            --prettyPrint
+                        ''', odcInstallation: 'OWASP-DC'
+                        
+                        dependencyCheckPublisher pattern: 'dependency-check-report.xml'
+                    }
+                }
+                
+                stage('Trivy Security Scan') {
+                    steps {
+                        sh '''
+                            # Install Trivy if not present
+                            if ! command -v trivy &> /dev/null; then
+                                wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+                                echo "deb https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee -a /etc/apt/sources.list
+                                sudo apt-get update && sudo apt-get install trivy
+                            fi
+                            
+                            # Scan filesystem for vulnerabilities
+                            trivy fs --format json --output trivy-report.json applications/
+                            trivy fs --format table applications/
+                        '''
+                    }
+                }
+                
+                stage('Git Secrets Scan') {
+                    steps {
+                        sh '''
+                            # Install git-secrets if not present
+                            if ! command -v git-secrets &> /dev/null; then
+                                git clone https://github.com/awslabs/git-secrets.git /tmp/git-secrets
+                                cd /tmp/git-secrets && make install
+                            fi
+                            
+                            # Scan for secrets
+                            git secrets --register-aws
+                            git secrets --scan
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('🧪 Build & Test Services') {
+            parallel {
+                stage('User Service (Node.js)') {
+                    steps {
+                        dir('applications/user-service') {
+                            sh '''
+                                npm ci
+                                npm run lint
+                                npm run test:coverage
+                                npm run build
+                            '''
+                            
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'coverage',
+                                reportFiles: 'index.html',
+                                reportName: 'User Service Coverage'
+                            ])
+                        }
+                    }
+                }
+                
+                stage('Product Service (Python)') {
+                    steps {
+                        dir('applications/product-service') {
+                            sh '''
+                                python -m venv venv
+                                source venv/bin/activate
+                                pip install -r requirements.txt
+                                pip install pytest-cov flake8 bandit
+                                
+                                # Code quality
+                                flake8 . --max-line-length=88 --exclude=venv
+                                
+                                # Security scan
+                                bandit -r . -f json -o bandit-report.json || true
+                                
+                                # Tests with coverage
+                                pytest --cov=. --cov-report=html --cov-report=xml
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Order Service (Java)') {
+                    steps {
+                        dir('applications/order-service') {
+                            sh '''
+                                mvn clean compile
+                                mvn spotbugs:check
+                                mvn test
+                                mvn jacoco:report
+                                mvn package -DskipTests
+                            '''
+                            
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'target/site/jacoco',
+                                reportFiles: 'index.html',
+                                reportName: 'Order Service Coverage'
+                            ])
+                        }
+                    }
+                }
+                
+                stage('Notification Service (Go)') {
+                    steps {
+                        dir('applications/notification-service') {
+                            sh '''
+                                go mod tidy
+                                go vet ./...
+                                go test -race -coverprofile=coverage.out ./...
+                                go tool cover -html=coverage.out -o coverage.html
+                                go build -o notification-service .
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('🐳 Docker Build & Security Scan') {
+            parallel {
+                stage('Build Docker Images') {
+                    steps {
+                        script {
+                            def services = ['user-service', 'product-service', 'order-service', 'notification-service']
+                            services.each { service ->
+                                dir("applications/${service}") {
+                                    sh "docker build -t ${service}:${BUILD_VERSION} ."
+                                    sh "docker tag ${service}:${BUILD_VERSION} ${service}:latest"
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                stage('Container Security Scan') {
+                    steps {
+                        script {
+                            def services = ['user-service', 'product-service', 'order-service', 'notification-service']
+                            services.each { service ->
+                                sh """
+                                    # Trivy container scan
+                                    trivy image --format json --output ${service}-container-scan.json ${service}:${BUILD_VERSION}
+                                    
+                                    # Hadolint Dockerfile scan
+                                    docker run --rm -i hadolint/hadolint < applications/${service}/Dockerfile || true
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('📦 Push to ECR') {
+            steps {
+                script {
+                    sh """
+                        # Login to ECR
+                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        
+                        # Create repositories if they don't exist
+                        aws ecr describe-repositories --repository-names user-service || aws ecr create-repository --repository-name user-service
+                        aws ecr describe-repositories --repository-names product-service || aws ecr create-repository --repository-name product-service
+                        aws ecr describe-repositories --repository-names order-service || aws ecr create-repository --repository-name order-service
+                        aws ecr describe-repositories --repository-names notification-service || aws ecr create-repository --repository-name notification-service
+                    """
+                    
+                    def services = ['user-service', 'product-service', 'order-service', 'notification-service']
+                    services.each { service ->
+                        sh """
+                            docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                            docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
+                            docker push ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                            docker push ${ECR_REGISTRY}/${service}:latest
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('🚀 Deploy to Staging') {
+            steps {
+                script {
+                    sh """
+                        # Update kubeconfig
+                        aws eks update-kubeconfig --region ${AWS_REGION} --name ${CLUSTER_NAME}
+                        
+                        # Create staging namespace if it doesn't exist
+                        kubectl create namespace staging --dry-run=client -o yaml | kubectl apply -f -
+                        
+                        # Deploy using Helm or kubectl
+                        envsubst < kubernetes/manifests/deployment-template.yaml > kubernetes/manifests/deployment-staging.yaml
+                        kubectl apply -f kubernetes/manifests/deployment-staging.yaml -n staging
+                        
+                        # Wait for deployment to be ready
+                        kubectl rollout status deployment/user-service -n staging --timeout=300s
+                        kubectl rollout status deployment/product-service -n staging --timeout=300s
+                        kubectl rollout status deployment/order-service -n staging --timeout=300s
+                        kubectl rollout status deployment/notification-service -n staging --timeout=300s
+                    """
+                }
+            }
+        }
+        
+        stage('🧪 Integration & E2E Tests') {
+            parallel {
+                stage('API Integration Tests') {
+                    steps {
+                        sh '''
+                            # Install Newman (Postman CLI)
+                            npm install -g newman
+                            
+                            # Run API tests against staging
+                            newman run tests/postman/ecommerce-api-tests.json \
+                                --environment tests/postman/staging-environment.json \
+                                --reporters cli,htmlextra \
+                                --reporter-htmlextra-export newman-report.html
+                        '''
+                        
+                        publishHTML([
+                            allowMissing: false,
+                            alwaysLinkToLastBuild: true,
+                            keepAll: true,
+                            reportDir: '.',
+                            reportFiles: 'newman-report.html',
+                            reportName: 'API Test Report'
+                        ])
+                    }
+                }
+                
+                stage('Performance Tests') {
+                    steps {
+                        sh '''
+                            # Install K6
+                            sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+                            echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+                            sudo apt-get update && sudo apt-get install k6
+                            
+                            # Run performance tests
+                            k6 run --out json=performance-results.json tests/performance/load-test.js
+                        '''
+                    }
+                }
+                
+                stage('Security Penetration Tests') {
+                    steps {
+                        sh '''
+                            # OWASP ZAP baseline scan
+                            docker run -t owasp/zap2docker-stable zap-baseline.py \
+                                -t http://staging-lb-url.com \
+                                -J zap-report.json || true
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('📊 Quality Gate') {
+            steps {
+                script {
+                    timeout(time: 5, unit: 'MINUTES') {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('🎯 Deploy to Production') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                }
+            }
+            steps {
+                script {
+                    def deployApproved = input(
+                        message: 'Deploy to Production?',
+                        ok: 'Deploy',
+                        parameters: [
+                            choice(name: 'DEPLOYMENT_STRATEGY', choices: ['rolling', 'blue-green', 'canary'], description: 'Deployment Strategy')
+                        ]
+                    )
+                    
+                    sh """
+                        # Create production namespace
+                        kubectl create namespace production --dry-run=client -o yaml | kubectl apply -f -
+                        
+                        # Deploy with chosen strategy
+                        if [ "${deployApproved.DEPLOYMENT_STRATEGY}" = "blue-green" ]; then
+                            # Blue-Green deployment logic
+                            kubectl apply -f kubernetes/manifests/deployment-production-blue.yaml -n production
+                        else
+                            # Rolling deployment
+                            envsubst < kubernetes/manifests/deployment-template.yaml > kubernetes/manifests/deployment-production.yaml
+                            kubectl apply -f kubernetes/manifests/deployment-production.yaml -n production
+                        fi
+                        
+                        # Wait for deployment
+                        kubectl rollout status deployment/user-service -n production --timeout=600s
+                        kubectl rollout status deployment/product-service -n production --timeout=600s
+                        kubectl rollout status deployment/order-service -n production --timeout=600s
+                        kubectl rollout status deployment/notification-service -n production --timeout=600s
+                    """
+                }
+            }
+        }
+        
+        stage('🔄 Post-Deployment Verification') {
+            steps {
+                sh '''
+                    # Health checks
+                    kubectl get pods -n production
+                    
+                    # Smoke tests
+                    newman run tests/postman/smoke-tests.json \
+                        --environment tests/postman/production-environment.json
+                    
+                    # Update deployment status
+                    curl -X POST -H "Content-Type: application/json" \
+                        -d '{"deployment_id": "'${BUILD_NUMBER}'", "status": "success", "environment": "production"}' \
+                        https://your-deployment-tracker.com/api/deployments
+                '''
+            }
+        }
+    }
+    
+    post {
+        always {
+            // Archive artifacts
+            archiveArtifacts artifacts: '**/*-report.json,**/*-report.html,**/coverage/**', allowEmptyArchive: true
+            
+            // Publish test results
+            publishTestResults testResultsPattern: '**/target/surefire-reports/*.xml,**/test-results.xml'
+            
+            // Clean up Docker images
+            sh 'docker system prune -f'
+        }
+        
+        success {
+            slackSend(
+                channel: env.SLACK_CHANNEL,
+                color: 'good',
+                message: """
+                ✅ *Deployment Successful!*
+                *Project:* ${env.JOB_NAME}
+                *Build:* ${env.BUILD_NUMBER}
+                *Version:* ${env.BUILD_VERSION}
+                *Branch:* ${env.GIT_BRANCH}
+                *Duration:* ${currentBuild.durationString}
+                """
+            )
+        }
+        
+        failure {
+            slackSend(
+                channel: env.SLACK_CHANNEL,
+                color: 'danger',
+                message: """
+                ❌ *Deployment Failed!*
+                *Project:* ${env.JOB_NAME}
+                *Build:* ${env.BUILD_NUMBER}
+                *Branch:* ${env.GIT_BRANCH}
+                *Stage:* ${env.STAGE_NAME}
+                *Duration:* ${currentBuild.durationString}
+                """
+            )
+        }
+        
+        unstable {
+            slackSend(
+                channel: env.SLACK_CHANNEL,
+                color: 'warning',
+                message: """
+                ⚠️ *Deployment Unstable!*
+                *Project:* ${env.JOB_NAME}
+                *Build:* ${env.BUILD_NUMBER}
+                *Issues:* Quality gate warnings or test failures
+                """
+            )
+        }
+    }
+}
