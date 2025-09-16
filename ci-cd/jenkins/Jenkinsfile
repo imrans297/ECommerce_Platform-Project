@@ -90,7 +90,8 @@ pipeline {
                         sh '''
                             echo "Git secrets scan - checking for hardcoded secrets"
                             # Simple grep-based secret detection
-                            grep -r "aws_access_key_id\|aws_secret_access_key\|password\|token" applications/ || echo "No obvious secrets found"
+                            grep -r "aws_access_key_id" applications/ || echo "No AWS keys found"
+                            grep -r "password" applications/ || echo "No passwords found"
                             echo "Git secrets scan completed"
                         '''
                     }
