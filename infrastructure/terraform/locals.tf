@@ -13,8 +13,8 @@ locals {
     CreatedDate   = formatdate("YYYY-MM-DD", timestamp())
   }
   
-  # Availability zones
-  azs = slice(data.aws_availability_zones.available.names, 0, 3)
+  # Availability zones (limit to 2 for EKS compatibility)
+  azs = slice(data.aws_availability_zones.available.names, 0, 2)
   
   # Environment-specific configurations
   is_production = var.environment == "prod"

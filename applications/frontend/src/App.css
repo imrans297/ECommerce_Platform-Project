@@ -1,0 +1,54 @@
+.App {
+  text-align: center;
+}
+
+.header {
+  background-color: #282c34;
+  padding: 1rem;
+  color: white;
+}
+
+.nav {
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+  margin-top: 1rem;
+}
+
+.nav a {
+  color: white;
+  text-decoration: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+}
+
+.nav a:hover {
+  background-color: #61dafb;
+}
+
+main {
+  padding: 2rem;
+}
+
+.service-status {
+  display: flex;
+  justify-content: space-around;
+  margin: 2rem 0;
+}
+
+.status-card {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 1rem;
+  min-width: 150px;
+}
+
+.status-healthy {
+  border-color: #4caf50;
+  background-color: #f1f8e9;
+}
+
+.status-error {
+  border-color: #f44336;
+  background-color: #ffebee;
+}

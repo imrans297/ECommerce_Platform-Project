@@ -35,10 +35,9 @@ pipeline {
                 stage('SonarQube Analysis') {
                     steps {
                         script {
-                            def scannerHome = tool 'SonarQubeScanner'
                             withSonarQubeEnv('SonarQube') {
                                 sh """
-                                    ${scannerHome}/bin/sonar-scanner \
+                                    sonar-scanner \
                                     -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
                                     -Dsonar.sources=applications/ \
                                     -Dsonar.exclusions=**/node_modules/**,**/target/**,**/*.test.js \
@@ -80,6 +79,32 @@ pipeline {
                     }
                 }
                 
+                stage('Snyk Security Scan') {
+                    steps {
+                        withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
+                            sh '''
+                                # Install Snyk CLI
+                                npm install -g snyk
+                                snyk auth $SNYK_TOKEN
+                                
+                                # Scan for vulnerabilities
+                                snyk test --json > snyk-report.json || true
+                                snyk monitor
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Checkmarx SAST') {
+                    steps {
+                        sh '''
+                            # Placeholder for Checkmarx SAST scan
+                            echo "Running Checkmarx SAST scan..."
+                            # checkmarx scan would go here
+                        '''
+                    }
+                }
+                
                 stage('Git Secrets Scan') {
                     steps {
                         sh '''
@@ -92,6 +117,18 @@ pipeline {
                             # Scan for secrets
                             git secrets --register-aws
                             git secrets --scan
+                        '''
+                    }
+                }
+                
+                stage('License Compliance') {
+                    steps {
+                        sh '''
+                            # Install license checker
+                            npm install -g license-checker
+                            
+                            # Check licenses in Node.js projects
+                            cd applications/user-service && license-checker --json > ../../license-report.json || true
                         '''
                     }
                 }
@@ -180,6 +217,28 @@ pipeline {
                         }
                     }
                 }
+                
+                stage('Frontend (React)') {
+                    steps {
+                        dir('applications/frontend') {
+                            sh '''
+                                npm ci
+                                npm run lint
+                                npm run test -- --coverage --watchAll=false
+                                npm run build
+                            '''
+                            
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'coverage',
+                                reportFiles: 'index.html',
+                                reportName: 'Frontend Coverage'
+                            ])
+                        }
+                    }
+                }
             }
         }
         
@@ -188,7 +247,7 @@ pipeline {
                 stage('Build Docker Images') {
                     steps {
                         script {
-                            def services = ['user-service', 'product-service', 'order-service', 'notification-service']
+                            def services = ['user-service', 'product-service', 'order-service', 'notification-service', 'frontend']
                             services.each { service ->
                                 dir("applications/${service}") {
                                     sh "docker build -t ${service}:${BUILD_VERSION} ."
@@ -202,7 +261,7 @@ pipeline {
                 stage('Container Security Scan') {
                     steps {
                         script {
-                            def services = ['user-service', 'product-service', 'order-service', 'notification-service']
+                            def services = ['user-service', 'product-service', 'order-service', 'notification-service', 'frontend']
                             services.each { service ->
                                 sh """
                                     # Trivy container scan
@@ -218,28 +277,49 @@ pipeline {
             }
         }
         
-        stage('📦 Push to ECR') {
-            steps {
-                script {
-                    sh """
-                        # Login to ECR
-                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                        
-                        # Create repositories if they don't exist
-                        aws ecr describe-repositories --repository-names user-service || aws ecr create-repository --repository-name user-service
-                        aws ecr describe-repositories --repository-names product-service || aws ecr create-repository --repository-name product-service
-                        aws ecr describe-repositories --repository-names order-service || aws ecr create-repository --repository-name order-service
-                        aws ecr describe-repositories --repository-names notification-service || aws ecr create-repository --repository-name notification-service
-                    """
-                    
-                    def services = ['user-service', 'product-service', 'order-service', 'notification-service']
-                    services.each { service ->
-                        sh """
-                            docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
-                            docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
-                            docker push ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
-                            docker push ${ECR_REGISTRY}/${service}:latest
-                        """
+        stage('📦 Publish Artifacts') {
+            parallel {
+                stage('Push to ECR') {
+                    steps {
+                        script {
+                            sh """
+                                # Login to ECR
+                                aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                            """
+                            
+                            def services = ['user-service', 'product-service', 'order-service', 'notification-service', 'frontend']
+                            services.each { service ->
+                                sh """
+                                    docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                    docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
+                                    docker push ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                    docker push ${ECR_REGISTRY}/${service}:latest
+                                """
+                            }
+                        }
+                    }
+                }
+                
+                stage('Upload to Artifactory') {
+                    steps {
+                        script {
+                            def server = Artifactory.server 'artifactory-server'
+                            def uploadSpec = """
+                            {
+                                "files": [
+                                    {
+                                        "pattern": "applications/*/target/*.jar",
+                                        "target": "ecommerce-libs-release-local/"
+                                    },
+                                    {
+                                        "pattern": "applications/*/dist/*.tgz",
+                                        "target": "ecommerce-npm-local/"
+                                    }
+                                ]
+                            }
+                            """
+                            server.upload(uploadSpec)
+                        }
                     }
                 }
             }
@@ -264,6 +344,7 @@ pipeline {
                         kubectl rollout status deployment/product-service -n staging --timeout=300s
                         kubectl rollout status deployment/order-service -n staging --timeout=300s
                         kubectl rollout status deployment/notification-service -n staging --timeout=300s
+                        kubectl rollout status deployment/frontend -n staging --timeout=300s
                     """
                 }
             }
@@ -325,12 +406,24 @@ pipeline {
         stage('📊 Quality Gate') {
             steps {
                 script {
-                    timeout(time: 5, unit: 'MINUTES') {
+                    timeout(time: 10, unit: 'MINUTES') {
                         def qg = waitForQualityGate()
                         if (qg.status != 'OK') {
                             error "Pipeline aborted due to quality gate failure: ${qg.status}"
                         }
                     }
+                    
+                    // Additional quality checks
+                    sh '''
+                        # Check security scan results
+                        if [ -f "trivy-report.json" ]; then
+                            HIGH_VULNS=$(cat trivy-report.json | jq '.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH") | length' | wc -l)
+                            if [ "$HIGH_VULNS" -gt "5" ]; then
+                                echo "Too many HIGH vulnerabilities found: $HIGH_VULNS"
+                                exit 1
+                            fi
+                        fi
+                    '''
                 }
             }
         }
@@ -371,6 +464,7 @@ pipeline {
                         kubectl rollout status deployment/product-service -n production --timeout=600s
                         kubectl rollout status deployment/order-service -n production --timeout=600s
                         kubectl rollout status deployment/notification-service -n production --timeout=600s
+                        kubectl rollout status deployment/frontend -n production --timeout=600s
                     """
                 }
             }

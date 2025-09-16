@@ -1,0 +1,74 @@
+{
+  "info": {
+    "name": "E-commerce API Tests",
+    "description": "Integration tests for e-commerce platform",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "User Service Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/user-service/health",
+          "host": ["{{base_url}}"],
+          "path": ["user-service", "health"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('Service is healthy', function () {",
+              "    const response = pm.response.json();",
+              "    pm.expect(response.status).to.eql('healthy');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Product Service Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/product-service/health",
+          "host": ["{{base_url}}"],
+          "path": ["product-service", "health"]
+        }
+      }
+    },
+    {
+      "name": "Order Service Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/order-service/health",
+          "host": ["{{base_url}}"],
+          "path": ["order-service", "health"]
+        }
+      }
+    },
+    {
+      "name": "Notification Service Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/notification-service/health",
+          "host": ["{{base_url}}"],
+          "path": ["notification-service", "health"]
+        }
+      }
+    }
+  ]
+}

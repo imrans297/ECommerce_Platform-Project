@@ -3,27 +3,33 @@
 echo "🚀 Setting up ArgoCD for GitOps Deployment"
 
 # Create ArgoCD namespace
-kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace argocd1 --dry-run=client -o yaml | kubectl apply -f -
 
 # Install ArgoCD
 echo "📦 Installing ArgoCD..."
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl apply -n argocd1 -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
 # Wait for ArgoCD to be ready
 echo "⏳ Waiting for ArgoCD to be ready..."
-kubectl wait --for=condition=available --timeout=600s deployment/argocd-server -n argocd
+kubectl wait --for=condition=available --timeout=600s deployment/argocd-server -n argocd1
 
 # Patch ArgoCD server service to use NodePort
-kubectl patch svc argocd-server -n argocd -p '{"spec":{"type":"NodePort","ports":[{"port":443,"targetPort":8080,"nodePort":30443}]}}'
+kubectl patch svc argocd-server -n argocd1 -p '{"spec":{"type":"LoadBalancer"}}'
 
 # Get ArgoCD admin password
-ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
+ARGOCD_PASSWORD=$(kubectl -n argocd1 get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
 
-# Get node IP for ArgoCD access
-NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')
-if [ -z "$NODE_IP" ]; then
-    NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-fi
+# Get ArgoCD LoadBalancer URL
+echo "⏳ Waiting for LoadBalancer to get external IP..."
+ARGOCD_URL=""
+for i in {1..30}; do
+    ARGOCD_URL=$(kubectl get svc argocd-server -n argocd1 -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+    if [ ! -z "$ARGOCD_URL" ]; then
+        break
+    fi
+    echo "Waiting for LoadBalancer... ($i/30)"
+    sleep 10
+done
 
 # Create Git repository secret for your GitHub repo
 kubectl apply -f - <<EOF
@@ -31,7 +37,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: ecommerce-repo
-  namespace: argocd
+  namespace: argocd1
   labels:
     argocd.argoproj.io/secret-type: repository
 type: Opaque
@@ -48,7 +54,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
   name: ecommerce
-  namespace: argocd
+  namespace: argocd1
 spec:
   description: E-commerce Platform Project
   
@@ -105,7 +111,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: ecommerce-dev
-  namespace: argocd
+  namespace: argocd1
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -145,7 +151,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: ecommerce-staging
-  namespace: argocd
+  namespace: argocd1
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -185,7 +191,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: ecommerce-production
-  namespace: argocd
+  namespace: argocd1
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -225,12 +231,20 @@ rm /tmp/argocd-linux-amd64
 echo "✅ ArgoCD setup completed successfully!"
 echo ""
 echo "🔗 Access ArgoCD:"
-echo "URL: https://${NODE_IP}:30443"
+if [ ! -z "$ARGOCD_URL" ]; then
+    echo "URL: https://${ARGOCD_URL}"
+else
+    echo "URL: Use 'kubectl get svc argocd-server -n argocd1' to get LoadBalancer URL"
+fi
 echo "Username: admin"
 echo "Password: ${ARGOCD_PASSWORD}"
 echo ""
 echo "🔧 ArgoCD CLI Login:"
-echo "argocd login ${NODE_IP}:30443 --username admin --password ${ARGOCD_PASSWORD} --insecure"
+if [ ! -z "$ARGOCD_URL" ]; then
+    echo "argocd login ${ARGOCD_URL} --username admin --password ${ARGOCD_PASSWORD} --insecure"
+else
+    echo "argocd login <LOADBALANCER_URL> --username admin --password ${ARGOCD_PASSWORD} --insecure"
+fi
 echo ""
 echo "📋 Applications Created:"
 echo "✅ ecommerce-dev (Auto-sync from main branch)"
@@ -244,4 +258,4 @@ echo "3. Push Kubernetes manifests to your repo"
 echo "4. ArgoCD will automatically deploy your applications"
 echo ""
 echo "📝 Update Repository Secret:"
-echo "kubectl patch secret ecommerce-repo -n argocd -p '{\"stringData\":{\"password\":\"YOUR_GITHUB_TOKEN\"}}'"
+echo "kubectl patch secret ecommerce-repo -n argocd1 -p '{\"stringData\":{\"password\":\"YOUR_GITHUB_TOKEN\"}}'"

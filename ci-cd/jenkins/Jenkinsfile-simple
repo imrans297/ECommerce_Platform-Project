@@ -1,0 +1,135 @@
+pipeline {
+    agent any
+    
+    environment {
+        AWS_REGION = 'us-east-1'
+        ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
+        CLUSTER_NAME = 'ecommerce-platform-dev-eks'
+    }
+    
+    stages {
+        stage('🔄 Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.BUILD_VERSION = "${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
+                    env.AWS_ACCOUNT_ID = sh(
+                        script: 'aws sts get-caller-identity --query Account --output text',
+                        returnStdout: true
+                    ).trim()
+                }
+                echo "Building version: ${env.BUILD_VERSION}"
+            }
+        }
+        
+        stage('🏗️ Build Services') {
+            parallel {
+                stage('User Service') {
+                    steps {
+                        dir('applications/user-service') {
+                            sh 'npm ci && npm run build'
+                        }
+                    }
+                }
+                stage('Product Service') {
+                    steps {
+                        dir('applications/product-service') {
+                            sh 'pip install -r requirements.txt'
+                        }
+                    }
+                }
+                stage('Order Service') {
+                    steps {
+                        dir('applications/order-service') {
+                            sh 'mvn clean package -DskipTests'
+                        }
+                    }
+                }
+                stage('Notification Service') {
+                    steps {
+                        dir('applications/notification-service') {
+                            sh 'go mod tidy && go build -o notification-service .'
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('🐳 Docker Build') {
+            steps {
+                script {
+                    def services = ['user-service', 'product-service', 'order-service', 'notification-service']
+                    services.each { service ->
+                        dir("applications/${service}") {
+                            sh "docker build -t ${service}:${BUILD_VERSION} ."
+                            sh "docker tag ${service}:${BUILD_VERSION} ${service}:latest"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('📦 Push to ECR') {
+            steps {
+                script {
+                    sh """
+                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                    """
+                    
+                    def services = ['user-service', 'product-service', 'order-service', 'notification-service']
+                    services.each { service ->
+                        sh """
+                            docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                            docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
+                            docker push ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                            docker push ${ECR_REGISTRY}/${service}:latest
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('🚀 Deploy to EKS') {
+            steps {
+                script {
+                    sh """
+                        aws eks update-kubeconfig --region ${AWS_REGION} --name ${CLUSTER_NAME}
+                        
+                        # Update image tags in deployment
+                        sed -i 's|:latest|:${BUILD_VERSION}|g' kubernetes/manifests/all-services.yaml
+                        
+                        # Apply deployment
+                        kubectl apply -f kubernetes/manifests/all-services.yaml
+                        
+                        # Wait for rollout
+                        kubectl rollout status deployment/user-service -n ecommerce --timeout=300s
+                        kubectl rollout status deployment/product-service -n ecommerce --timeout=300s
+                        kubectl rollout status deployment/order-service -n ecommerce --timeout=300s
+                        kubectl rollout status deployment/notification-service -n ecommerce --timeout=300s
+                    """
+                }
+            }
+        }
+        
+        stage('✅ Health Check') {
+            steps {
+                sh """
+                    kubectl get pods -n ecommerce
+                    kubectl get svc -n ecommerce
+                """
+            }
+        }
+    }
+    
+    post {
+        always {
+            sh 'docker system prune -f'
+        }
+        success {
+            echo "✅ Pipeline completed successfully!"
+        }
+        failure {
+            echo "❌ Pipeline failed!"
+        }
+    }
+}
