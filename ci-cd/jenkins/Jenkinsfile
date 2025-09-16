@@ -111,6 +111,8 @@ pipeline {
                     steps {
                         dir('applications/user-service') {
                             sh '''
+                                rm -f package-lock.json
+                                npm cache clean --force
                                 npm install
                                 npm test || true
                                 npm run build || true
