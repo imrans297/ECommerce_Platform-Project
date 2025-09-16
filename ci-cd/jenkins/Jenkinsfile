@@ -7,7 +7,7 @@ pipeline {
         CLUSTER_NAME = 'ecommerce-platform-dev-eks'
         SONAR_PROJECT_KEY = 'ecommerce-platform'
         BUILD_VERSION = "${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
-        NEXUS_URL = 'http://localhost:8081'
+        NEXUS_URL = 'http://a46ac20f3e2a74d41a0b01368d1f826b-101476107.us-east-1.elb.amazonaws.com:8081'
         ARGOCD_SERVER = 'a0d0281ca17884b9dadbf713dfeab4f4-353081775.us-east-1.elb.amazonaws.com'
     }
     
@@ -200,8 +200,8 @@ pipeline {
                         find kubernetes/manifests/staging -name "*.yaml" -exec sed -i "s|:latest|:${BUILD_VERSION}|g" {} \\;
                         
                         # Commit and push changes
-                        git config user.name "Jenkins"
-                        git config user.email "jenkins@company.com"
+                        git config user.name "imrans297"
+                        git config user.email "imrans297@gmail.com"
                         git add kubernetes/manifests/staging/
                         git commit -m "Update staging images to ${BUILD_VERSION}" || true
                         git push https://${GITHUB_TOKEN}@github.com/imrans297/ECommerce_Platform-Project.git HEAD:main || true
