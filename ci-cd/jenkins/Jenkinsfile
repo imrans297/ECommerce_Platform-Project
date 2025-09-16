@@ -169,23 +169,33 @@ pipeline {
         
         stage('🐳 Docker Build') {
             steps {
+                echo "=== STARTING DOCKER BUILD STAGE ==="
                 timeout(time: 10, unit: 'MINUTES') {
                     script {
+                        echo "Docker Build: Initializing..."
                         def services = ['user-service', 'product-service', 'order-service', 'notification-service']
+                        echo "Docker Build: Processing ${services.size()} services"
+                        
                         services.each { service ->
-                            echo "Building Docker image for ${service}..."
+                            echo "=== BUILDING ${service.toUpperCase()} ==="
                             sh """
+                                echo "Entering directory: applications/${service}"
                                 cd applications/${service}
+                                pwd
+                                ls -la
+                                
                                 if [ -f Dockerfile ]; then
-                                    echo "Dockerfile found for ${service}"
-                                    docker build -t ${service}:${BUILD_VERSION} . || echo "Docker build failed for ${service}"
+                                    echo "✅ Dockerfile found for ${service}"
+                                    echo "Starting Docker build for ${service}:${BUILD_VERSION}"
+                                    docker build -t ${service}:${BUILD_VERSION} . || echo "❌ Docker build failed for ${service}"
                                     docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION} || true
-                                    echo "Docker build completed for ${service}"
+                                    echo "✅ Docker build completed for ${service}"
                                 else
-                                    echo "No Dockerfile found for ${service}, skipping..."
+                                    echo "❌ No Dockerfile found for ${service}, skipping..."
                                 fi
                             """
                         }
+                        echo "=== DOCKER BUILD STAGE COMPLETED ==="
                     }
                 }
             }
