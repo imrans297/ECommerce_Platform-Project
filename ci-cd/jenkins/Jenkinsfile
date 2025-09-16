@@ -16,10 +16,6 @@ pipeline {
         maven 'Maven-3.9'
     }
     
-    triggers {
-        githubPush()
-    }
-    
     stages {
         stage('🔄 Checkout & Setup') {
             steps {
