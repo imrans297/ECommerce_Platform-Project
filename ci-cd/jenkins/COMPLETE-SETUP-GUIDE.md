@@ -357,6 +357,39 @@ pipeline {
                         ])
                     }
                 }
+                
+                stage('Trivy Security Scan') {
+                    steps {
+                        sh '''
+                            # Install Trivy if not present
+                            if ! command -v trivy &> /dev/null; then
+                                wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+                                echo "deb https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee -a /etc/apt/sources.list
+                                sudo apt-get update && sudo apt-get install trivy
+                            fi
+                            
+                            # Scan filesystem for vulnerabilities
+                            trivy fs --format json --output trivy-report.json applications/
+                            trivy fs --format table applications/
+                        '''
+                    }
+                }
+                
+                stage('Git Secrets Scan') {
+                    steps {
+                        sh '''
+                            # Install git-secrets if not present
+                            if ! command -v git-secrets &> /dev/null; then
+                                git clone https://github.com/awslabs/git-secrets.git /tmp/git-secrets
+                                cd /tmp/git-secrets && make install
+                            fi
+                            
+                            # Scan for secrets
+                            git secrets --register-aws
+                            git secrets --scan
+                        '''
+                    }
+                }
             }
         }
         
