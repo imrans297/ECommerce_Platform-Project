@@ -111,7 +111,7 @@ pipeline {
                     steps {
                         dir('applications/user-service') {
                             sh '''
-                                npm ci
+                                npm install
                                 npm test || true
                                 npm run build || true
                             '''
