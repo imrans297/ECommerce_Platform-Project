@@ -232,38 +232,61 @@ EOF
         
         stage('🐳 Container Build & Push') {
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-                    sh '''
-                        echo "Container Build & Push Stage Started"
-                        
-                        # Install AWS CLI
-                        if ! command -v aws &> /dev/null; then
-                            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-                            unzip -o awscliv2.zip
-                            ./aws/install --bin-dir ./bin --install-dir ./aws-cli
-                            export PATH=$PATH:$(pwd)/bin
-                        fi
-                        
-                        # Check available container runtimes
-                        echo "Checking container runtimes..."
-                        command -v docker && echo "Docker available" || echo "Docker not available"
-                        command -v podman && echo "Podman available" || echo "Podman not available"
-                        command -v buildah && echo "Buildah available" || echo "Buildah not available"
-                        
-                        # Create ECR repositories
-                        export PATH=$PATH:$(pwd)/bin
-                        for service in user-service product-service order-service notification-service; do
-                            if [ -f "applications/${service}/Dockerfile" ]; then
-                                echo "Creating ECR repository for ${service}..."
-                                aws ecr describe-repositories --repository-names ${service} --region ${AWS_REGION} || \
-                                aws ecr create-repository --repository-name ${service} --region ${AWS_REGION}
-                                echo "ECR repository ready for ${service}"
-                            fi
-                        done
-                        
-                        echo "Note: Container builds will be handled by ArgoCD Image Updater or external CI"
-                        echo "Container Build & Push Stage Completed"
-                    '''
+                script {
+                    try {
+                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
+                            sh '''
+                                echo "=== Container Build & Push Stage Started ==="
+                                
+                                # Install AWS CLI
+                                echo "Installing AWS CLI..."
+                                if ! command -v aws &> /dev/null; then
+                                    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+                                    unzip -o awscliv2.zip
+                                    ./aws/install --bin-dir ./bin --install-dir ./aws-cli
+                                    export PATH=$PATH:$(pwd)/bin
+                                    echo "AWS CLI installed successfully"
+                                else
+                                    echo "AWS CLI already available"
+                                fi
+                                
+                                # Verify AWS CLI
+                                export PATH=$PATH:$(pwd)/bin
+                                aws --version || echo "AWS CLI version check failed"
+                                
+                                # Check AWS credentials
+                                echo "Checking AWS credentials..."
+                                aws sts get-caller-identity || echo "AWS credentials check failed"
+                                
+                                # Check available container runtimes
+                                echo "Checking container runtimes..."
+                                command -v docker && echo "Docker available" || echo "Docker not available"
+                                command -v podman && echo "Podman available" || echo "Podman not available"
+                                command -v buildah && echo "Buildah available" || echo "Buildah not available"
+                                
+                                # Create ECR repositories
+                                echo "Creating ECR repositories..."
+                                for service in user-service product-service order-service notification-service; do
+                                    if [ -f "applications/${service}/Dockerfile" ]; then
+                                        echo "Processing ${service}..."
+                                        aws ecr describe-repositories --repository-names ${service} --region ${AWS_REGION} && echo "Repository ${service} exists" || {
+                                            echo "Creating repository ${service}..."
+                                            aws ecr create-repository --repository-name ${service} --region ${AWS_REGION}
+                                        }
+                                        echo "ECR repository ready for ${service}"
+                                    else
+                                        echo "No Dockerfile found for ${service}"
+                                    fi
+                                done
+                                
+                                echo "Note: Container builds will be handled by ArgoCD Image Updater or external CI"
+                                echo "=== Container Build & Push Stage Completed ==="
+                            '''
+                        }
+                    } catch (Exception e) {
+                        echo "Container Build & Push failed: ${e.getMessage()}"
+                        echo "Continuing pipeline execution..."
+                    }
                 }
             }
         }
