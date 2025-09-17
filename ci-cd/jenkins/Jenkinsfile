@@ -470,8 +470,10 @@ EOF
                         echo "Installing podman..."
                         curl -L -o podman-static.tar.gz https://github.com/containers/podman/releases/download/v4.7.2/podman-remote-static-linux_amd64.tar.gz
                         tar -xzf podman-static.tar.gz
-                        chmod +x podman-remote-static-linux_amd64
-                        mv podman-remote-static-linux_amd64 ./bin/podman
+                        ls -la
+                        find . -name "*podman*" -type f
+                        chmod +x podman-remote-static-linux_amd64 || chmod +x ./podman-remote-static-linux_amd64 || find . -name "*podman*" -exec chmod +x {} \;
+                        mv podman-remote-static-linux_amd64 ./bin/podman || find . -name "*podman*" -exec mv {} ./bin/podman \; || echo "Podman installation failed"
                         
                         # Build and push images
                         echo "Building and pushing container images..."
