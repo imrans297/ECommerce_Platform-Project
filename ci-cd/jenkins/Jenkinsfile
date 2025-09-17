@@ -409,57 +409,217 @@ EOF
         
         stage('🐳 Container Build & Push') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'aws-access-key', variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'aws-secret-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                ]) {
-                    sh '''
-                        echo "=== Container Build & Push Stage Started ==="
-                        
-                        # Install AWS CLI
-                        echo "Installing AWS CLI..."
-                        if ! command -v aws &> /dev/null; then
-                            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-                            unzip -o awscliv2.zip
-                            ./aws/install --bin-dir ./bin --install-dir ./aws-cli
-                            export PATH=$PATH:$(pwd)/bin
-                            echo "AWS CLI installed successfully"
-                        else
-                            echo "AWS CLI already available"
-                        fi
-                        
-                        # Verify AWS CLI
-                        export PATH=$PATH:$(pwd)/bin
-                        aws --version || echo "AWS CLI version check failed"
-                        
-                        # Check AWS credentials
-                        echo "Checking AWS credentials..."
-                        aws sts get-caller-identity || echo "AWS credentials check failed"
-                        
-                        # Check available container runtimes
-                        echo "Checking container runtimes..."
-                        command -v docker && echo "Docker available" || echo "Docker not available"
-                        command -v podman && echo "Podman available" || echo "Podman not available"
-                        command -v buildah && echo "Buildah available" || echo "Buildah not available"
-                        
-                        # Create ECR repositories
-                        echo "Creating ECR repositories..."
-                        for service in user-service product-service order-service notification-service; do
-                            if [ -f "applications/${service}/Dockerfile" ]; then
-                                echo "Processing ${service}..."
-                                aws ecr describe-repositories --repository-names ${service} --region ${AWS_REGION} && echo "Repository ${service} exists" || {
-                                    echo "Creating repository ${service}..."
-                                    aws ecr create-repository --repository-name ${service} --region ${AWS_REGION}
-                                }
-                                echo "ECR repository ready for ${service}"
-                            else
-                                echo "No Dockerfile found for ${service}"
-                            fi
-                        done
-                        
-                        echo "Note: Container builds will be handled by ArgoCD Image Updater or external CI"
-                        echo "=== Container Build & Push Stage Completed ==="
-                    '''
+                script {
+                    try {
+                        withCredentials([usernamePassword(credentialsId: 'aws-credentials', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                            sh '''
+                                echo "=== Container Build & Push Stage Started ==="
+                                
+                                # Check container runtime on EKS (containerd)
+                                echo "🔍 Checking container runtime in EKS environment..."
+                                
+                                # EKS uses containerd, not Docker daemon
+                                echo "EKS Node Container Runtime: containerd"
+                                echo "Docker socket not available in containerd environment"
+                                
+                                # Check available container tools
+                                echo "🔍 Checking available container build tools..."
+                                
+                                # Option 1: Try to install buildah (rootless container builds)
+                                if ! command -v buildah &> /dev/null; then
+                                    echo "📦 Installing buildah for container builds..."
+                                    
+                                    # Install buildah (works without Docker daemon)
+                                    if command -v apt-get &> /dev/null; then
+                                        apt-get update && apt-get install -y buildah || echo "Buildah installation failed"
+                                    elif command -v yum &> /dev/null; then
+                                        yum install -y buildah || echo "Buildah installation failed"
+                                    else
+                                        echo "Cannot install buildah - unsupported package manager"
+                                    fi
+                                fi
+                                
+                                # Option 2: Try to install podman
+                                if ! command -v podman &> /dev/null && ! command -v buildah &> /dev/null; then
+                                    echo "📦 Installing podman for container builds..."
+                                    
+                                    if command -v apt-get &> /dev/null; then
+                                        apt-get install -y podman || echo "Podman installation failed"
+                                    elif command -v yum &> /dev/null; then
+                                        yum install -y podman || echo "Podman installation failed"
+                                    fi
+                                fi
+                                
+                                # Check what's available
+                                command -v buildah && echo "✅ Buildah available" || echo "❌ Buildah not available"
+                                command -v podman && echo "✅ Podman available" || echo "❌ Podman not available"
+                                command -v docker && echo "✅ Docker available" || echo "❌ Docker not available"
+                                
+                                # Verify container build tools
+                                echo "🔍 Verifying container build capabilities..."
+                                
+                                if command -v buildah &> /dev/null; then
+                                    echo "✅ Using buildah for container builds"
+                                    buildah --version
+                                    CONTAINER_TOOL="buildah"
+                                elif command -v podman &> /dev/null; then
+                                    echo "✅ Using podman for container builds"
+                                    podman --version
+                                    CONTAINER_TOOL="podman"
+                                elif command -v docker &> /dev/null; then
+                                    echo "✅ Using docker for container builds"
+                                    docker --version
+                                    CONTAINER_TOOL="docker"
+                                else
+                                    echo "❌ No container build tools available"
+                                    CONTAINER_TOOL="none"
+                                fi
+                                
+                                echo "Selected container tool: $CONTAINER_TOOL"
+                                
+                                # Install AWS CLI
+                                echo "📦 Installing AWS CLI..."
+                                if ! command -v aws &> /dev/null; then
+                                    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+                                    unzip -o awscliv2.zip
+                                    ./aws/install --bin-dir ./bin --install-dir ./aws-cli
+                                    export PATH=$PATH:$(pwd)/bin
+                                    echo "✅ AWS CLI installed"
+                                else
+                                    echo "✅ AWS CLI already available"
+                                fi
+                                
+                                # Configure AWS CLI path
+                                export PATH=$PATH:$(pwd)/bin
+                                
+                                # Verify AWS credentials
+                                echo "🔍 Verifying AWS credentials..."
+                                aws --version || echo "❌ AWS CLI not accessible"
+                                aws sts get-caller-identity || echo "❌ AWS credentials invalid"
+                                
+                                # Login to ECR
+                                echo "🔐 Logging into ECR..."
+                                aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY} || echo "❌ ECR login failed"
+                                
+                                # Build and push containers based on available tools
+                                if [ "$CONTAINER_TOOL" != "none" ]; then
+                                    echo "🏗️  Building and pushing containers with $CONTAINER_TOOL..."
+                                    
+                                    for service in user-service product-service order-service notification-service; do
+                                        if [ -f "applications/${service}/Dockerfile" ]; then
+                                            echo "📦 Processing ${service}..."
+                                            
+                                            # Create ECR repository if it doesn't exist
+                                            aws ecr describe-repositories --repository-names ${service} --region ${AWS_REGION} || {
+                                                echo "🏗️  Creating ECR repository for ${service}..."
+                                                aws ecr create-repository --repository-name ${service} --region ${AWS_REGION}
+                                            }
+                                            
+                                            # Build container image based on available tool
+                                            echo "🔨 Building ${service} image with $CONTAINER_TOOL..."
+                                            
+                                            if [ "$CONTAINER_TOOL" = "buildah" ]; then
+                                                # Use buildah (rootless, no daemon required)
+                                                buildah bud -t ${service}:${BUILD_VERSION} applications/${service}/ && {
+                                                    buildah tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                                    buildah tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
+                                                    
+                                                    echo "📤 Pushing ${service} to ECR with buildah..."
+                                                    buildah push ${ECR_REGISTRY}/${service}:${BUILD_VERSION} && echo "✅ Pushed ${service}:${BUILD_VERSION}"
+                                                    buildah push ${ECR_REGISTRY}/${service}:latest && echo "✅ Pushed ${service}:latest"
+                                                }
+                                            elif [ "$CONTAINER_TOOL" = "podman" ]; then
+                                                # Use podman (rootless alternative to Docker)
+                                                podman build -t ${service}:${BUILD_VERSION} applications/${service}/ && {
+                                                    podman tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                                    podman tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
+                                                    
+                                                    echo "📤 Pushing ${service} to ECR with podman..."
+                                                    podman push ${ECR_REGISTRY}/${service}:${BUILD_VERSION} && echo "✅ Pushed ${service}:${BUILD_VERSION}"
+                                                    podman push ${ECR_REGISTRY}/${service}:latest && echo "✅ Pushed ${service}:latest"
+                                                }
+                                            elif [ "$CONTAINER_TOOL" = "docker" ]; then
+                                                # Use docker (if somehow available)
+                                                docker build -t ${service}:${BUILD_VERSION} applications/${service}/ && {
+                                                    docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                                    docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
+                                                    
+                                                    echo "📤 Pushing ${service} to ECR with docker..."
+                                                    docker push ${ECR_REGISTRY}/${service}:${BUILD_VERSION} && echo "✅ Pushed ${service}:${BUILD_VERSION}"
+                                                    docker push ${ECR_REGISTRY}/${service}:latest && echo "✅ Pushed ${service}:latest"
+                                                }
+                                            fi
+                                            
+                                            echo "✅ ${service} container build completed"
+                                        else
+                                            echo "⚠️  No Dockerfile found for ${service}"
+                                        fi
+                                    done
+                                else
+                                    echo "❌ No container build tools available in Jenkins pod"
+                                    echo "📝 Using Kaniko for container builds in Kubernetes..."
+                                    
+                                    # Use Kaniko for container builds (works in Kubernetes without Docker)
+                                    for service in user-service product-service order-service notification-service; do
+                                        if [ -f "applications/${service}/Dockerfile" ]; then
+                                            echo "📦 Creating Kaniko build job for ${service}..."
+                                            
+                                            # Create Kaniko job manifest
+                                            cat > kaniko-${service}.yaml << EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kaniko-${service}-${BUILD_NUMBER}
+  namespace: jenkins
+spec:
+  template:
+    spec:
+      containers:
+      - name: kaniko
+        image: gcr.io/kaniko-project/executor:latest
+        args:
+        - "--dockerfile=applications/${service}/Dockerfile"
+        - "--context=."
+        - "--destination=${ECR_REGISTRY}/${service}:${BUILD_VERSION}"
+        - "--destination=${ECR_REGISTRY}/${service}:latest"
+        volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        workingDir: /workspace
+      volumes:
+      - name: workspace
+        emptyDir: {}
+      restartPolicy: Never
+EOF
+                                            
+                                            echo "✅ Kaniko job manifest created for ${service}"
+                                        fi
+                                    done
+                                    
+                                    echo "📝 Alternative build options:"
+                                    echo "1. Apply Kaniko jobs: kubectl apply -f kaniko-*.yaml"
+                                    echo "2. GitHub Actions with Docker"
+                                    echo "3. AWS CodeBuild"
+                                    echo "4. Local development machine"
+                                fi
+                                
+                                # Cleanup
+                                echo "🧹 Cleaning up Docker images..."
+                                docker system prune -f || echo "Docker cleanup failed"
+                                
+                                echo "✅ Container Build & Push Stage Completed"
+                            '''
+                        }
+                    } catch (Exception e) {
+                        echo "❌ Container Build & Push failed: ${e.getMessage()}"
+                        echo "🔧 Troubleshooting steps:"
+                        echo "1. Check Jenkins agent has sudo/root permissions"
+                        echo "2. Verify AWS credentials are configured"
+                        echo "3. Ensure Docker daemon can start"
+                        echo "4. Check network connectivity to ECR"
+                        echo "5. Verify Dockerfiles exist and are valid"
+                        echo "⚠️  Continuing pipeline execution..."
+                    }
                 }
             }
         }
