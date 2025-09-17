@@ -27,6 +27,6 @@ class OrderServiceApplicationTest {
     void ordersEndpointShouldReturnOrdersArray() throws Exception {
         mockMvc.perform(get("/orders"))
                 .andExpect(status().isOk())
-                .andExpected(jsonPath("$.orders").isArray());
+                .andExpect(jsonPath("$.orders").isArray());
     }
 }
