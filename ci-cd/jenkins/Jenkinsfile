@@ -466,77 +466,39 @@ EOF
                         
                         echo "ECR repositories setup completed"
                         
-                        # Create build pod with Docker access
-                        echo "Creating Docker build pod..."
-                        kubectl run docker-build-${BUILD_NUMBER} --rm -i --restart=Never \
-                            --image=docker:latest \
-                            --overrides='{
-                                "spec": {
-                                    "containers": [{
-                                        "name": "docker-build",
-                                        "image": "docker:dind",
-                                        "securityContext": {"privileged": true},
-                                        "volumeMounts": [{
-                                            "name": "workspace",
-                                            "mountPath": "/workspace"
-                                        }]
-                                    }],
-                                    "volumes": [{
-                                        "name": "workspace",
-                                        "hostPath": {"path": "/tmp"}
-                                    }]
-                                }
-                            }' -- sh -c '
-                                # Install AWS CLI
-                                apk add --no-cache curl unzip
-                                curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-                                unzip awscliv2.zip
-                                ./aws/install
-                                
-                                # Configure AWS
-                                export AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}'
-                                export AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}'
-                                export AWS_DEFAULT_REGION='${AWS_REGION}'
-                                
-                                # Login to ECR
-                                aws ecr get-login-password --region '${AWS_REGION}' | docker login --username AWS --password-stdin '${ECR_REGISTRY}'
-                                
-                                echo "Docker build pod ready for image builds"
-                                sleep 300
-                            ' &
+                        # Install Docker
+                        echo "Installing Docker..."
+                        curl -fsSL https://get.docker.com -o get-docker.sh
+                        sh get-docker.sh
                         
-                        # Wait for build pod
-                        sleep 30
+                        # Start Docker daemon in background
+                        dockerd &
+                        sleep 15
                         
-                        # Copy source code and build images
-                        echo "Building container images..."
+                        # Login to ECR
+                        echo "Logging into ECR..."
+                        ./bin/aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        
+                        # Build and push images
+                        echo "Building and pushing images..."
                         for service in user-service product-service order-service notification-service; do
                             if [ -f "applications/${service}/Dockerfile" ]; then
                                 echo "Building ${service}..."
+                                cd applications/${service}
                                 
-                                # Copy source to build pod
-                                kubectl cp applications/${service} docker-build-${BUILD_NUMBER}:/workspace/${service}
+                                docker build -t ${service}:${BUILD_VERSION} .
+                                docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
                                 
-                                # Build and push image
-                                kubectl exec docker-build-${BUILD_NUMBER} -- sh -c "
-                                    cd /workspace/${service}
-                                    docker build -t ${service}:${BUILD_VERSION} .
-                                    docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
-                                    docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
-                                    docker push ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
-                                    docker push ${ECR_REGISTRY}/${service}:latest
-                                "
+                                docker push ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                docker push ${ECR_REGISTRY}/${service}:latest
                                 
-                                echo "${service} pushed successfully"
-                            else
-                                echo "No Dockerfile found for ${service}"
+                                echo "${service} pushed to ECR"
+                                cd ../..
                             fi
                         done
                         
-                        # Cleanup build pod
-                        kubectl delete pod docker-build-${BUILD_NUMBER} --ignore-not-found=true
-                        
-                        echo "All container images built and pushed successfully"
+                        echo "All images built and pushed to ECR"
                     '''
                 }
             }
