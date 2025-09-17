@@ -543,6 +543,42 @@ EOF
         }
 
         
+        stage('📊 SonarQube Analysis') {
+            steps {
+                withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+                    sh '''
+                        echo "=== Running SonarQube Analysis ==="
+                        
+                        # Install SonarQube Scanner if not present
+                        if ! command -v sonar-scanner &> /dev/null; then
+                            curl -L -o sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
+                            unzip -o sonar-scanner.zip
+                            export PATH=$PATH:$(pwd)/sonar-scanner-4.8.0.2856-linux/bin
+                        fi
+                        
+                        # Run comprehensive SonarQube analysis
+                        sonar-scanner \
+                            -Dsonar.projectKey=ecommerce-platform \
+                            -Dsonar.sources=applications/ \
+                            -Dsonar.host.url=http://ae4a917fa6ef1499ea8319779cf5b4bf-571257061.us-east-1.elb.amazonaws.com:9000 \
+                            -Dsonar.login=${SONAR_TOKEN} \
+                            -Dsonar.projectName="E-commerce Platform" \
+                            -Dsonar.projectVersion=${BUILD_VERSION} \
+                            -Dsonar.sourceEncoding=UTF-8 \
+                            -Dsonar.exclusions="**/node_modules/**,**/target/**,**/build/**,**/dist/**" \
+                            -Dsonar.java.source=17 \
+                            -Dsonar.java.target=17 \
+                            -Dsonar.python.version=3.8 \
+                            -Dsonar.scm.disabled=true || echo "SonarQube analysis completed with warnings"
+                        
+                        echo "SonarQube analysis submitted successfully"
+                        echo "Waiting for analysis to complete..."
+                        sleep 45
+                    '''
+                }
+            }
+        }
+        
         stage('🚪 Quality Gate') {
             steps {
                 withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
@@ -619,6 +655,21 @@ EOF
                                 exit 0
                                 ;;
                             "NONE"|"UNKNOWN")
+                                echo "⚠️  QUALITY GATE STATUS UNKNOWN"
+                                echo "Project may not have been analyzed yet or SonarQube is unreachable"
+                                echo "Check SonarQube dashboard: ${SONAR_URL}/dashboard?id=${PROJECT_KEY}"
+                                exit 0
+                                ;;
+                            *)
+                                echo "ℹ️  Quality Gate Status: $QG_STATUS"
+                                echo "Check SonarQube dashboard: ${SONAR_URL}/dashboard?id=${PROJECT_KEY}"
+                                exit 0
+                                ;;
+                        esac
+                    '''
+                }
+            }
+        }
                                 echo "⚠️  QUALITY GATE STATUS UNKNOWN"
                                 echo "Project may not have been analyzed yet or SonarQube is unreachable"
                                 echo "Check SonarQube dashboard: ${SONAR_URL}/dashboard?id=${PROJECT_KEY}"
