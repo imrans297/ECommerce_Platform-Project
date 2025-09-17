@@ -670,21 +670,6 @@ EOF
                 }
             }
         }
-                                echo "⚠️  QUALITY GATE STATUS UNKNOWN"
-                                echo "Project may not have been analyzed yet or SonarQube is unreachable"
-                                echo "Check SonarQube dashboard: ${SONAR_URL}/dashboard?id=${PROJECT_KEY}"
-                                exit 0
-                                ;;
-                            *)
-                                echo "ℹ️  Quality Gate Status: $QG_STATUS"
-                                echo "Check SonarQube dashboard: ${SONAR_URL}/dashboard?id=${PROJECT_KEY}"
-                                exit 0
-                                ;;
-                        esac
-                    '''
-                }
-            }
-        }
         
         stage('🚀 Update Manifests') {
             steps {
