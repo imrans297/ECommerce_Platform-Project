@@ -428,22 +428,22 @@ EOF
                             echo "AWS CLI already available"
                         fi
                         
-                        # Configure AWS CLI path
-                        export PATH=$PATH:$(pwd)/bin
+                        # Set AWS CLI path
+                        AWS_CLI_PATH=$(pwd)/bin/aws
                         
                         # Verify AWS credentials
                         echo "Checking AWS credentials..."
-                        aws --version || echo "AWS CLI version check failed"
-                        aws sts get-caller-identity || echo "AWS credentials check failed"
+                        ${AWS_CLI_PATH} --version || echo "AWS CLI version check failed"
+                        ${AWS_CLI_PATH} sts get-caller-identity || echo "AWS credentials check failed"
                         
                         # Create ECR repositories
                         echo "Creating ECR repositories..."
                         for service in user-service product-service order-service notification-service; do
                             if [ -f "applications/${service}/Dockerfile" ]; then
                                 echo "Processing ${service}..."
-                                aws ecr describe-repositories --repository-names ${service} --region ${AWS_REGION} && echo "Repository ${service} exists" || {
+                                ${AWS_CLI_PATH} ecr describe-repositories --repository-names ${service} --region ${AWS_REGION} && echo "Repository ${service} exists" || {
                                     echo "Creating repository ${service}..."
-                                    aws ecr create-repository --repository-name ${service} --region ${AWS_REGION}
+                                    ${AWS_CLI_PATH} ecr create-repository --repository-name ${service} --region ${AWS_REGION}
                                 }
                                 echo "ECR repository ready for ${service}"
                             else
@@ -452,6 +452,29 @@ EOF
                         done
                         
                         echo "Note: Container builds will be handled by external CI/CD or ArgoCD Image Updater"
+                        
+                        # Troubleshooting information
+                        echo "=== Troubleshooting Information ==="
+                        echo "Jenkins Pod Name: $(hostname)"
+                        echo "Current Working Directory: $(pwd)"
+                        echo "AWS CLI Location: $(pwd)/bin/aws"
+                        echo "User: $(whoami)"
+                        echo "Environment Variables:"
+                        env | grep -E '^(AWS_|PATH)' || echo "No AWS env vars found"
+                        
+                        echo "=== Kubectl Troubleshooting Commands ==="
+                        echo "To exec into this Jenkins pod:"
+                        echo "kubectl exec -it $(hostname) -n jenkins -- /bin/bash"
+                        echo ""
+                        echo "To check AWS CLI installation:"
+                        echo "kubectl exec $(hostname) -n jenkins -- ls -la /var/jenkins_home/workspace/*/bin/"
+                        echo ""
+                        echo "To test AWS CLI manually:"
+                        echo "kubectl exec $(hostname) -n jenkins -- /var/jenkins_home/workspace/*/bin/aws --version"
+                        echo ""
+                        echo "To check environment variables:"
+                        echo "kubectl exec $(hostname) -n jenkins -- env | grep AWS"
+                        
                         echo "=== Container Build & Push Stage Completed ==="
                     '''
                 }
