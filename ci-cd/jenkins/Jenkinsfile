@@ -40,26 +40,56 @@ pipeline {
                                     export PATH=$PATH:$(pwd)/sonar-scanner-4.8.0.2856-linux/bin
                                 fi
                                 
-                                # Create sonar-project.properties
+                                # Create comprehensive sonar-project.properties
                                 cat > sonar-project.properties << EOF
 sonar.projectKey=${SONAR_PROJECT_KEY}
 sonar.projectName=E-commerce Platform
 sonar.projectVersion=${BUILD_VERSION}
+sonar.projectDescription=Multi-service e-commerce platform
 sonar.sources=applications/
 sonar.sourceEncoding=UTF-8
-sonar.exclusions=**/node_modules/**,**/target/**,**/build/**,**/*.test.js,**/*_test.go
+sonar.scm.provider=git
+
+# Language-specific configurations
+sonar.javascript.file.suffixes=.js,.jsx
+sonar.typescript.file.suffixes=.ts,.tsx
+sonar.java.source=17
+sonar.java.target=17
+sonar.python.version=3.8
+
+# Exclusions
+sonar.exclusions=**/node_modules/**,**/target/**,**/build/**,**/dist/**,**/*.test.js,**/*_test.go,**/coverage/**,**/*.min.js
+
+# Test configurations
+sonar.tests=applications/
+sonar.test.inclusions=**/*test*/**,**/*Test*.java,**/*.test.js,**/*_test.go
+
+# Coverage reports
 sonar.javascript.lcov.reportPaths=applications/user-service/coverage/lcov.info
 sonar.java.binaries=applications/order-service/target/classes
+sonar.java.test.binaries=applications/order-service/target/test-classes
 sonar.python.coverage.reportPaths=applications/product-service/coverage.xml
 sonar.go.coverage.reportPaths=applications/notification-service/coverage.out
 EOF
                                 
-                                # Run SonarQube analysis
+                                echo "=== SonarQube Configuration ==="
+                                cat sonar-project.properties
+                                echo "==============================="
+                                
+                                # Test SonarQube server connectivity
+                                echo "Testing SonarQube server connectivity..."
+                                curl -f http://ae4a917fa6ef1499ea8319779cf5b4bf-571257061.us-east-1.elb.amazonaws.com:9000/api/system/status || echo "SonarQube server not reachable"
+                                
+                                # Run SonarQube analysis with detailed logging
                                 export PATH=$PATH:$(pwd)/sonar-scanner-4.8.0.2856-linux/bin
+                                echo "Starting SonarQube analysis..."
                                 sonar-scanner \
                                 -Dsonar.host.url=http://ae4a917fa6ef1499ea8319779cf5b4bf-571257061.us-east-1.elb.amazonaws.com:9000 \
                                 -Dsonar.login=${SONAR_TOKEN} \
-                                -X || echo "SonarQube scan completed with warnings"
+                                -Dsonar.verbose=true \
+                                -X
+                                
+                                echo "SonarQube analysis completed. Check the server UI for results."
                             '''
                         }
                     }
