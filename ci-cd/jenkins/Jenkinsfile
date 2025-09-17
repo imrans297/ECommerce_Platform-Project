@@ -466,29 +466,30 @@ EOF
                         
                         echo "ECR repositories setup completed"
                         
-                        # Use buildah as Docker alternative (no daemon required)
-                        echo "Installing buildah for container builds..."
-                        curl -L -o buildah.tar.gz https://github.com/containers/buildah/releases/download/v1.32.0/buildah-v1.32.0.linux-amd64.tar.gz
-                        tar -xzf buildah.tar.gz
-                        chmod +x buildah
+                        # Install podman for container builds
+                        echo "Installing podman..."
+                        curl -L -o podman-static.tar.gz https://github.com/containers/podman/releases/download/v4.7.2/podman-remote-static-linux_amd64.tar.gz
+                        tar -xzf podman-static.tar.gz
+                        chmod +x podman-remote-static-linux_amd64
+                        mv podman-remote-static-linux_amd64 ./bin/podman
                         
-                        # Build and push images using buildah
+                        # Build and push images
                         echo "Building and pushing container images..."
                         for service in user-service product-service order-service notification-service; do
                             if [ -f "applications/${service}/Dockerfile" ]; then
                                 echo "Building ${service}..."
                                 cd applications/${service}
                                 
-                                # Build with buildah
-                                ./../../buildah build -t ${service}:${BUILD_VERSION} .
-                                ./../../buildah tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
-                                ./../../buildah tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
+                                # Build with podman
+                                ../../bin/podman build -t ${service}:${BUILD_VERSION} .
+                                ../../bin/podman tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                ../../bin/podman tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
                                 
                                 # Login and push to ECR
                                 echo "Pushing ${service} to ECR..."
-                                ../../bin/aws ecr get-login-password --region ${AWS_REGION} | ./../../buildah login --username AWS --password-stdin ${ECR_REGISTRY}
-                                ./../../buildah push ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
-                                ./../../buildah push ${ECR_REGISTRY}/${service}:latest
+                                ../../bin/aws ecr get-login-password --region ${AWS_REGION} | ../../bin/podman login --username AWS --password-stdin ${ECR_REGISTRY}
+                                ../../bin/podman push ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                ../../bin/podman push ${ECR_REGISTRY}/${service}:latest
                                 
                                 echo "${service} pushed successfully"
                                 cd ../..
