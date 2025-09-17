@@ -465,40 +465,10 @@ EOF
                         done
                         
                         echo "ECR repositories setup completed"
-                        
-                        # Install Docker
-                        echo "Installing Docker..."
-                        curl -fsSL https://get.docker.com -o get-docker.sh
-                        sh get-docker.sh
-                        
-                        # Start Docker daemon in background
-                        dockerd &
-                        sleep 15
-                        
-                        # Login to ECR
-                        echo "Logging into ECR..."
-                        ./bin/aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                        
-                        # Build and push images
-                        echo "Building and pushing images..."
-                        for service in user-service product-service order-service notification-service; do
-                            if [ -f "applications/${service}/Dockerfile" ]; then
-                                echo "Building ${service}..."
-                                cd applications/${service}
-                                
-                                docker build -t ${service}:${BUILD_VERSION} .
-                                docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
-                                docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
-                                
-                                docker push ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
-                                docker push ${ECR_REGISTRY}/${service}:latest
-                                
-                                echo "${service} pushed to ECR"
-                                cd ../..
-                            fi
-                        done
-                        
-                        echo "All images built and pushed to ECR"
+                        echo "✅ ECR repositories are ready for container images"
+                        echo "📝 Note: Docker builds require root access not available in this Jenkins pod"
+                        echo "🔧 Use external CI/CD or local Docker to build and push images to ECR"
+                        echo "📋 ECR Login command: aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}"
                     '''
                 }
             }
