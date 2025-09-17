@@ -466,35 +466,64 @@ EOF
                         
                         echo "ECR repositories setup completed"
                         
-                        # Install podman for container builds
-                        echo "Installing podman..."
-                        curl -L -o podman-static.tar.gz https://github.com/containers/podman/releases/download/v4.7.2/podman-remote-static-linux_amd64.tar.gz
-                        tar -xzf podman-static.tar.gz
+                        # Install kubectl for Kaniko builds
+                        echo "Installing kubectl..."
+                        curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+                        chmod +x kubectl
+                        mv kubectl ./bin/kubectl
                         
-                        # Find and setup podman binary
-                        PODMAN_BINARY=$(find . -name "*podman*" -type f | grep -v tar.gz | head -1)
-                        echo "Found podman binary: $PODMAN_BINARY"
-                        chmod +x $PODMAN_BINARY
-                        cp $PODMAN_BINARY ./bin/podman
+                        # Create ECR auth secret
+                        echo "Creating ECR auth secret..."
+                        ./bin/aws ecr get-login-password --region ${AWS_REGION} > /tmp/ecr-token
+                        ./bin/kubectl create secret docker-registry ecr-secret \
+                            --docker-server=${ECR_REGISTRY} \
+                            --docker-username=AWS \
+                            --docker-password=$(cat /tmp/ecr-token) \
+                            --dry-run=client -o yaml | ./bin/kubectl apply -f - || echo "Secret already exists"
                         
-                        # Verify podman installation
-                        ./bin/podman --version || echo "Podman installation failed"
-                        
-                        # Build and push images
-                        echo "Building and pushing container images..."
+                        # Build and push images using Kaniko
+                        echo "Building container images with Kaniko..."
                         for service in user-service product-service order-service notification-service; do
                             if [ -f "applications/${service}/Dockerfile" ]; then
-                                echo "Building ${service}..."
-                                cd applications/${service}
+                                echo "Building ${service} with Kaniko..."
                                 
-                                # Skip container builds - podman requires additional setup
-                                echo "Container build skipped - podman requires daemon setup"
-                                echo "ECR repository ${service} is ready for external builds"
+                                # Create Kaniko job
+                                cat > kaniko-${service}.yaml << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kaniko-${service}-${BUILD_NUMBER}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:latest
+    args:
+    - "--context=git://github.com/imrans297/ECommerce_Platform-Project.git#main"
+    - "--context-sub-path=applications/${service}"
+    - "--dockerfile=applications/${service}/Dockerfile"
+    - "--destination=${ECR_REGISTRY}/${service}:${BUILD_VERSION}"
+    - "--destination=${ECR_REGISTRY}/${service}:latest"
+    - "--cache=true"
+    volumeMounts:
+    - name: docker-config
+      mountPath: /kaniko/.docker
+  volumes:
+  - name: docker-config
+    secret:
+      secretName: ecr-secret
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+EOF
                                 
-                                echo "${service} pushed successfully"
-                                cd ../..
-                            else
-                                echo "No Dockerfile found for ${service}"
+                                # Run Kaniko build
+                                ./bin/kubectl apply -f kaniko-${service}.yaml
+                                ./bin/kubectl wait --for=condition=Ready pod/kaniko-${service}-${BUILD_NUMBER} --timeout=300s || echo "Build timeout for ${service}"
+                                ./bin/kubectl logs kaniko-${service}-${BUILD_NUMBER} || echo "No logs for ${service}"
+                                ./bin/kubectl delete pod kaniko-${service}-${BUILD_NUMBER} --ignore-not-found=true
+                                
+                                echo "${service} build completed"
                             fi
                         done
                         
