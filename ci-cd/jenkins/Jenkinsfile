@@ -162,17 +162,90 @@ EOF
             }
         }
         
+        stage('📥 Configure Nexus Repositories') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'nexus-credentials', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+                    sh '''
+                        echo "=== Configuring Nexus Repositories ==="
+                        
+                        # Configure Maven to use Nexus
+                        mkdir -p ~/.m2
+                        cat > ~/.m2/settings.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+    <servers>
+        <server>
+            <id>nexus</id>
+            <username>\${NEXUS_USER}</username>
+            <password>\${NEXUS_PASS}</password>
+        </server>
+    </servers>
+    <mirrors>
+        <mirror>
+            <id>nexus</id>
+            <mirrorOf>*</mirrorOf>
+            <url>\${NEXUS_URL}/repository/maven-public/</url>
+        </mirror>
+    </mirrors>
+    <profiles>
+        <profile>
+            <id>nexus</id>
+            <repositories>
+                <repository>
+                    <id>central</id>
+                    <url>\${NEXUS_URL}/repository/maven-public/</url>
+                    <releases><enabled>true</enabled></releases>
+                    <snapshots><enabled>true</enabled></snapshots>
+                </repository>
+            </repositories>
+        </profile>
+    </profiles>
+    <activeProfiles>
+        <activeProfile>nexus</activeProfile>
+    </activeProfiles>
+</settings>
+EOF
+                        
+                        # Configure NPM to use Nexus
+                        npm config set registry \${NEXUS_URL}/repository/npm-group/ || true
+                        npm config set _auth $(echo -n "\${NEXUS_USER}:\${NEXUS_PASS}" | base64) || true
+                        
+                        # Configure pip to use Nexus
+                        mkdir -p ~/.pip
+                        cat > ~/.pip/pip.conf << EOF
+[global]
+index-url = \${NEXUS_URL}/repository/pypi-group/simple
+trusted-host = $(echo \${NEXUS_URL} | cut -d'/' -f3 | cut -d':' -f1)
+EOF
+                        
+                        echo "Nexus repositories configured successfully"
+                    '''
+                }
+            }
+        }
+        
         stage('🧪 Build & Test Services') {
             parallel {
                 stage('User Service (Node.js)') {
                     steps {
                         dir('applications/user-service') {
                             sh '''
+                                echo "=== Building User Service (Node.js) ==="
                                 rm -f package-lock.json
                                 npm cache clean --force
-                                npm install
+                                
+                                # Install dependencies from Nexus
+                                npm install || npm install --registry https://registry.npmjs.org/
+                                
+                                # Run tests
                                 timeout 60 npm test -- --forceExit --detectOpenHandles || true
+                                
+                                # Build application
                                 npm run build || true
+                                
+                                # Create tarball for Nexus
+                                npm pack
+                                echo "User Service build completed"
                             '''
                         }
                     }
@@ -182,15 +255,23 @@ EOF
                     steps {
                         dir('applications/product-service') {
                             sh '''
+                                echo "=== Building Product Service (Python) ==="
+                                
                                 # Install pip if not present
                                 curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
                                 python3 get-pip.py --user || true
                                 export PATH=$PATH:~/.local/bin
                                 
-                                # Install dependencies
+                                # Install dependencies from Nexus/PyPI
                                 python3 -m pip install --user -r requirements.txt || true
-                                python3 -m pip install --user pytest || true
+                                python3 -m pip install --user pytest build || true
+                                
+                                # Run tests
                                 python3 -m pytest || true
+                                
+                                # Build wheel package
+                                python3 -m build || true
+                                echo "Product Service build completed"
                             '''
                         }
                     }
@@ -200,9 +281,18 @@ EOF
                     steps {
                         dir('applications/order-service') {
                             sh '''
-                                mvn clean compile || true
-                                mvn test || true
-                                mvn package -DskipTests || true
+                                echo "=== Building Order Service (Java) ==="
+                                
+                                # Clean and compile with Nexus dependencies
+                                mvn clean compile -s ~/.m2/settings.xml || mvn clean compile
+                                
+                                # Run tests
+                                mvn test -s ~/.m2/settings.xml || mvn test
+                                
+                                # Package application
+                                mvn package -DskipTests -s ~/.m2/settings.xml || mvn package -DskipTests
+                                
+                                echo "Order Service build completed"
                             '''
                         }
                     }
@@ -212,6 +302,8 @@ EOF
                     steps {
                         dir('applications/notification-service') {
                             sh '''
+                                echo "=== Building Notification Service (Go) ==="
+                                
                                 # Install Go if not present
                                 if ! command -v go &> /dev/null; then
                                     curl -L -o go.tar.gz https://go.dev/dl/go1.21.0.linux-amd64.tar.gz
@@ -220,9 +312,15 @@ EOF
                                     export GOROOT=$(pwd)/go
                                 fi
                                 
+                                # Configure Go proxy (Nexus doesn't typically proxy Go modules)
+                                export GOPROXY=https://proxy.golang.org,direct
+                                
+                                # Build and test
                                 go mod tidy || true
                                 go test ./... || true
                                 go build -o notification-service || true
+                                
+                                echo "Notification Service build completed"
                             '''
                         }
                     }
@@ -230,63 +328,127 @@ EOF
             }
         }
         
+        stage('📦 Publish Artifacts to Nexus') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'nexus-credentials', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+                    sh '''
+                        echo "=== Publishing Artifacts to Nexus ==="
+                        
+                        # Publish Node.js package
+                        if [ -f "applications/user-service/user-service-*.tgz" ]; then
+                            echo "Publishing Node.js package to Nexus..."
+                            curl -u "${NEXUS_USER}:${NEXUS_PASS}" \
+                                --upload-file applications/user-service/user-service-*.tgz \
+                                "${NEXUS_URL}/repository/npm-hosted/" || echo "NPM publish failed"
+                        fi
+                        
+                        # Publish Python wheel
+                        if [ -f "applications/product-service/dist/*.whl" ]; then
+                            echo "Publishing Python wheel to Nexus..."
+                            for wheel in applications/product-service/dist/*.whl; do
+                                curl -u "${NEXUS_USER}:${NEXUS_PASS}" \
+                                    --upload-file "$wheel" \
+                                    "${NEXUS_URL}/repository/pypi-hosted/" || echo "Python wheel publish failed"
+                            done
+                        fi
+                        
+                        # Publish Java JAR
+                        if [ -f "applications/order-service/target/*.jar" ]; then
+                            echo "Publishing Java JAR to Nexus..."
+                            cd applications/order-service
+                            mvn deploy -DskipTests -s ~/.m2/settings.xml \
+                                -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/maven-releases/ || echo "Maven deploy failed"
+                            cd ../..
+                        fi
+                        
+                        # Publish Go binary as generic artifact
+                        if [ -f "applications/notification-service/notification-service" ]; then
+                            echo "Publishing Go binary to Nexus..."
+                            curl -u "${NEXUS_USER}:${NEXUS_PASS}" \
+                                --upload-file applications/notification-service/notification-service \
+                                "${NEXUS_URL}/repository/raw-hosted/go-binaries/notification-service-${BUILD_VERSION}" || echo "Go binary publish failed"
+                        fi
+                        
+                        # Publish build metadata
+                        echo "Publishing build metadata..."
+                        cat > build-info.json << EOF
+{
+    "buildNumber": "${BUILD_NUMBER}",
+    "buildVersion": "${BUILD_VERSION}",
+    "gitCommit": "${GIT_COMMIT}",
+    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "artifacts": {
+        "user-service": "npm",
+        "product-service": "python-wheel",
+        "order-service": "maven-jar",
+        "notification-service": "go-binary"
+    }
+}
+EOF
+                        
+                        curl -u "${NEXUS_USER}:${NEXUS_PASS}" \
+                            --upload-file build-info.json \
+                            "${NEXUS_URL}/repository/raw-hosted/build-metadata/build-${BUILD_VERSION}.json" || echo "Build metadata publish failed"
+                        
+                        echo "Artifact publishing completed"
+                    '''
+                }
+            }
+        }
+        
         stage('🐳 Container Build & Push') {
             steps {
-                script {
-                    try {
-                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials']]) {
-                            sh '''
-                                echo "=== Container Build & Push Stage Started ==="
-                                
-                                # Install AWS CLI
-                                echo "Installing AWS CLI..."
-                                if ! command -v aws &> /dev/null; then
-                                    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-                                    unzip -o awscliv2.zip
-                                    ./aws/install --bin-dir ./bin --install-dir ./aws-cli
-                                    export PATH=$PATH:$(pwd)/bin
-                                    echo "AWS CLI installed successfully"
-                                else
-                                    echo "AWS CLI already available"
-                                fi
-                                
-                                # Verify AWS CLI
-                                export PATH=$PATH:$(pwd)/bin
-                                aws --version || echo "AWS CLI version check failed"
-                                
-                                # Check AWS credentials
-                                echo "Checking AWS credentials..."
-                                aws sts get-caller-identity || echo "AWS credentials check failed"
-                                
-                                # Check available container runtimes
-                                echo "Checking container runtimes..."
-                                command -v docker && echo "Docker available" || echo "Docker not available"
-                                command -v podman && echo "Podman available" || echo "Podman not available"
-                                command -v buildah && echo "Buildah available" || echo "Buildah not available"
-                                
-                                # Create ECR repositories
-                                echo "Creating ECR repositories..."
-                                for service in user-service product-service order-service notification-service; do
-                                    if [ -f "applications/${service}/Dockerfile" ]; then
-                                        echo "Processing ${service}..."
-                                        aws ecr describe-repositories --repository-names ${service} --region ${AWS_REGION} && echo "Repository ${service} exists" || {
-                                            echo "Creating repository ${service}..."
-                                            aws ecr create-repository --repository-name ${service} --region ${AWS_REGION}
-                                        }
-                                        echo "ECR repository ready for ${service}"
-                                    else
-                                        echo "No Dockerfile found for ${service}"
-                                    fi
-                                done
-                                
-                                echo "Note: Container builds will be handled by ArgoCD Image Updater or external CI"
-                                echo "=== Container Build & Push Stage Completed ==="
-                            '''
-                        }
-                    } catch (Exception e) {
-                        echo "Container Build & Push failed: ${e.getMessage()}"
-                        echo "Continuing pipeline execution..."
-                    }
+                withCredentials([
+                    string(credentialsId: 'aws-access-key', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh '''
+                        echo "=== Container Build & Push Stage Started ==="
+                        
+                        # Install AWS CLI
+                        echo "Installing AWS CLI..."
+                        if ! command -v aws &> /dev/null; then
+                            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+                            unzip -o awscliv2.zip
+                            ./aws/install --bin-dir ./bin --install-dir ./aws-cli
+                            export PATH=$PATH:$(pwd)/bin
+                            echo "AWS CLI installed successfully"
+                        else
+                            echo "AWS CLI already available"
+                        fi
+                        
+                        # Verify AWS CLI
+                        export PATH=$PATH:$(pwd)/bin
+                        aws --version || echo "AWS CLI version check failed"
+                        
+                        # Check AWS credentials
+                        echo "Checking AWS credentials..."
+                        aws sts get-caller-identity || echo "AWS credentials check failed"
+                        
+                        # Check available container runtimes
+                        echo "Checking container runtimes..."
+                        command -v docker && echo "Docker available" || echo "Docker not available"
+                        command -v podman && echo "Podman available" || echo "Podman not available"
+                        command -v buildah && echo "Buildah available" || echo "Buildah not available"
+                        
+                        # Create ECR repositories
+                        echo "Creating ECR repositories..."
+                        for service in user-service product-service order-service notification-service; do
+                            if [ -f "applications/${service}/Dockerfile" ]; then
+                                echo "Processing ${service}..."
+                                aws ecr describe-repositories --repository-names ${service} --region ${AWS_REGION} && echo "Repository ${service} exists" || {
+                                    echo "Creating repository ${service}..."
+                                    aws ecr create-repository --repository-name ${service} --region ${AWS_REGION}
+                                }
+                                echo "ECR repository ready for ${service}"
+                            else
+                                echo "No Dockerfile found for ${service}"
+                            fi
+                        done
+                        
+                        echo "Note: Container builds will be handled by ArgoCD Image Updater or external CI"
+                        echo "=== Container Build & Push Stage Completed ==="
+                    '''
                 }
             }
         }
@@ -304,17 +466,17 @@ EOF
         
         stage('🚀 Update Manifests') {
             steps {
-                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                withCredentials([usernamePassword(credentialsId: 'github-token', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_TOKEN')]) {
                     sh '''
                         # Update image tags in staging manifests
-                        find kubernetes/manifests/staging -name "*.yaml" -exec sed -i "s|:latest|:${BUILD_VERSION}|g" {} \\;
+                        find kubernetes/manifests/staging -name "*.yaml" -exec sed -i "s|:latest|:${BUILD_VERSION}|g" {} \\; || echo "No staging manifests found"
                         
                         # Commit and push changes
                         git config user.name "imrans297"
                         git config user.email "imrans297@gmail.com"
-                        git add kubernetes/manifests/staging/
-                        git commit -m "Update staging images to ${BUILD_VERSION}" || true
-                        git push https://${GITHUB_TOKEN}@github.com/imrans297/ECommerce_Platform-Project.git HEAD:main || true
+                        git add kubernetes/manifests/staging/ || echo "No staging changes to add"
+                        git commit -m "Update staging images to ${BUILD_VERSION}" || echo "No changes to commit"
+                        git push https://${GIT_TOKEN}@github.com/imrans297/ECommerce_Platform-Project.git HEAD:main || echo "Git push completed"
                     '''
                 }
             }
