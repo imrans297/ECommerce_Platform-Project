@@ -40,11 +40,26 @@ pipeline {
                                     export PATH=$PATH:$(pwd)/sonar-scanner-4.8.0.2856-linux/bin
                                 fi
                                 
+                                # Create sonar-project.properties
+                                cat > sonar-project.properties << EOF
+sonar.projectKey=${SONAR_PROJECT_KEY}
+sonar.projectName=E-commerce Platform
+sonar.projectVersion=${BUILD_VERSION}
+sonar.sources=applications/
+sonar.sourceEncoding=UTF-8
+sonar.exclusions=**/node_modules/**,**/target/**,**/build/**,**/*.test.js,**/*_test.go
+sonar.javascript.lcov.reportPaths=applications/user-service/coverage/lcov.info
+sonar.java.binaries=applications/order-service/target/classes
+sonar.python.coverage.reportPaths=applications/product-service/coverage.xml
+sonar.go.coverage.reportPaths=applications/notification-service/coverage.out
+EOF
+                                
+                                # Run SonarQube analysis
+                                export PATH=$PATH:$(pwd)/sonar-scanner-4.8.0.2856-linux/bin
                                 sonar-scanner \
-                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                                -Dsonar.sources=applications/ \
                                 -Dsonar.host.url=http://ae4a917fa6ef1499ea8319779cf5b4bf-571257061.us-east-1.elb.amazonaws.com:9000 \
-                                -Dsonar.login=${SONAR_TOKEN} || echo "SonarQube scan completed with warnings"
+                                -Dsonar.login=${SONAR_TOKEN} \
+                                -X || echo "SonarQube scan completed with warnings"
                             '''
                         }
                     }
@@ -226,9 +241,6 @@ EOF
                     }
                 }
             }
-        }kerfile for $service"
-
-            }
         }
         
         stage('📦 Push to ECR') {
@@ -269,7 +281,6 @@ EOF
                         }
                     }
                 }
-            }
             }
         }
         
