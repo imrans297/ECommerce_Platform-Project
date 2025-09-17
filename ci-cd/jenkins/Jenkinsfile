@@ -206,11 +206,9 @@ EOF
 </settings>
 EOF
                         
-                        # Configure NPM to use Nexus (with fallback to public registry)
-                        NEXUS_HOST=$(echo \${NEXUS_URL} | cut -d'/' -f3)
-                        npm config set registry \${NEXUS_URL}/repository/npm-group/ || npm config set registry https://registry.npmjs.org/
-                        npm config set //\${NEXUS_HOST}/repository/npm-group/:_auth $(echo -n "\${NEXUS_USER}:\${NEXUS_PASS}" | base64) || true
-                        npm config set //\${NEXUS_HOST}/repository/npm-group/:always-auth true || true
+                        # Use public NPM registry (skip Nexus for NPM due to auth complexity)
+                        npm config set registry https://registry.npmjs.org/
+                        echo "NPM configured to use public registry"
                         
                         # Configure pip to use Nexus
                         mkdir -p ~/.pip
@@ -233,14 +231,21 @@ EOF
                         dir('applications/user-service') {
                             sh '''
                                 echo "=== Building User Service (Node.js) ==="
-                                rm -f package-lock.json
+                                
+                                # Clean npm cache and config
+                                npm config delete registry || true
+                                npm config delete _auth || true
                                 npm cache clean --force
+                                rm -f package-lock.json
                                 
-                                # Install dependencies (fallback to public registry)
-                                npm install --registry https://registry.npmjs.org/ || npm install
+                                # Use public registry
+                                npm config set registry https://registry.npmjs.org/
                                 
-                                # Run tests (skip if no test script)
-                                npm run test --if-present || echo "No tests found or tests failed - continuing build"
+                                # Install dependencies
+                                npm install
+                                
+                                # Run tests
+                                npm run test --if-present || echo "Tests failed or not found - continuing build"
                                 
                                 # Build application
                                 npm run build || true
@@ -336,12 +341,13 @@ EOF
                     sh '''
                         echo "=== Publishing Artifacts to Nexus ==="
                         
-                        # Publish Node.js package
-                        if [ -f "applications/user-service/user-service-*.tgz" ]; then
-                            echo "Publishing Node.js package to Nexus..."
-                            curl -u "${NEXUS_USER}:${NEXUS_PASS}" \
-                                --upload-file applications/user-service/user-service-*.tgz \
-                                "${NEXUS_URL}/repository/npm-hosted/" || echo "NPM publish failed"
+                        # Create Node.js build artifact (skip Nexus NPM for now)
+                        if [ -f "applications/user-service/package.json" ]; then
+                            echo "Creating Node.js build artifact..."
+                            cd applications/user-service
+                            npm pack || echo "NPM pack failed"
+                            cd ../..
+                            echo "Node.js artifact created locally"
                         fi
                         
                         # Publish Python wheel
