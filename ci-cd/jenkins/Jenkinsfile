@@ -545,11 +545,93 @@ EOF
         
         stage('🚪 Quality Gate') {
             steps {
-                sh '''
-                    echo "Quality Gate Stage Started"
-                    echo "SonarQube quality gate check would be performed here"
-                    echo "Quality Gate Stage Completed"
-                '''
+                withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+                    sh '''
+                        echo "=== SonarQube Quality Gate Check ==="
+                        
+                        # SonarQube server details
+                        SONAR_URL="http://ae4a917fa6ef1499ea8319779cf5b4bf-571257061.us-east-1.elb.amazonaws.com:9000"
+                        PROJECT_KEY="${SONAR_PROJECT_KEY}"
+                        
+                        echo "Checking SonarQube server status..."
+                        curl -f "${SONAR_URL}/api/system/status" || echo "SonarQube server not reachable"
+                        
+                        echo "Fetching project analysis results..."
+                        
+                        # Get project status
+                        PROJECT_STATUS=$(curl -s -u "${SONAR_TOKEN}:" \
+                            "${SONAR_URL}/api/qualitygates/project_status?projectKey=${PROJECT_KEY}" || echo '{"projectStatus":{"status":"NONE"}}')
+                        
+                        echo "Project Status Response: $PROJECT_STATUS"
+                        
+                        # Parse quality gate status
+                        QG_STATUS=$(echo "$PROJECT_STATUS" | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "UNKNOWN")
+                        echo "Quality Gate Status: $QG_STATUS"
+                        
+                        # Get project metrics
+                        echo "\n=== Project Metrics ==="
+                        METRICS=$(curl -s -u "${SONAR_TOKEN}:" \
+                            "${SONAR_URL}/api/measures/component?component=${PROJECT_KEY}&metricKeys=lines,ncloc,coverage,duplicated_lines_density,bugs,vulnerabilities,code_smells,security_hotspots,reliability_rating,security_rating,maintainability_rating" || echo '{}')
+                        
+                        echo "Raw Metrics: $METRICS"
+                        
+                        # Extract and display key metrics
+                        if echo "$METRICS" | grep -q '"measures"'; then
+                            echo "\n=== Code Quality Metrics ==="
+                            echo "$METRICS" | grep -o '"metric":"[^"]*","value":"[^"]*"' | while read -r line; do
+                                METRIC=$(echo "$line" | cut -d'"' -f4)
+                                VALUE=$(echo "$line" | cut -d'"' -f8)
+                                echo "$METRIC: $VALUE"
+                            done
+                        else
+                            echo "No metrics available - project may not have been analyzed yet"
+                        fi
+                        
+                        # Get issues summary
+                        echo "\n=== Issues Summary ==="
+                        ISSUES=$(curl -s -u "${SONAR_TOKEN}:" \
+                            "${SONAR_URL}/api/issues/search?componentKeys=${PROJECT_KEY}&facets=severities,types&ps=1" || echo '{}')
+                        
+                        if echo "$ISSUES" | grep -q '"facets"'; then
+                            echo "Issues found in project:"
+                            echo "$ISSUES" | grep -o '"val":"[^"]*","count":[0-9]*' | while read -r issue; do
+                                TYPE=$(echo "$issue" | cut -d'"' -f4)
+                                COUNT=$(echo "$issue" | cut -d':' -f2)
+                                echo "$TYPE: $COUNT"
+                            done
+                        else
+                            echo "No issues data available"
+                        fi
+                        
+                        # Quality Gate Decision
+                        echo "\n=== Quality Gate Decision ==="
+                        case "$QG_STATUS" in
+                            "OK")
+                                echo "✅ QUALITY GATE PASSED"
+                                echo "Code quality meets the defined standards"
+                                exit 0
+                                ;;
+                            "ERROR")
+                                echo "❌ QUALITY GATE FAILED"
+                                echo "Code quality does not meet the defined standards"
+                                echo "Check SonarQube dashboard: ${SONAR_URL}/dashboard?id=${PROJECT_KEY}"
+                                # Don't fail the pipeline, just warn
+                                exit 0
+                                ;;
+                            "NONE"|"UNKNOWN")
+                                echo "⚠️  QUALITY GATE STATUS UNKNOWN"
+                                echo "Project may not have been analyzed yet or SonarQube is unreachable"
+                                echo "Check SonarQube dashboard: ${SONAR_URL}/dashboard?id=${PROJECT_KEY}"
+                                exit 0
+                                ;;
+                            *)
+                                echo "ℹ️  Quality Gate Status: $QG_STATUS"
+                                echo "Check SonarQube dashboard: ${SONAR_URL}/dashboard?id=${PROJECT_KEY}"
+                                exit 0
+                                ;;
+                        esac
+                    '''
+                }
             }
         }
         
