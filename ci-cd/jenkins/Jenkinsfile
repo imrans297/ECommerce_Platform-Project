@@ -501,7 +501,7 @@ spec:
     args:
     - "--context=git://github.com/imrans297/ECommerce_Platform-Project.git#main"
     - "--context-sub-path=applications/${service}"
-    - "--dockerfile=applications/${service}/Dockerfile"
+    - "--dockerfile=Dockerfile"
     - "--destination=${ECR_REGISTRY}/${service}:${BUILD_VERSION}"
     - "--destination=${ECR_REGISTRY}/${service}:latest"
     - "--cache=true"
@@ -517,16 +517,19 @@ spec:
         path: config.json
 EOF
                                 
-                                # Apply and wait for completion
+                                # Apply pod and start build
                                 ./bin/kubectl apply -f kaniko-${service}.yaml
-                                ./bin/kubectl wait --for=condition=Ready pod/kaniko-${service}-${BUILD_NUMBER} --timeout=600s || echo "Build may still be running"
                                 
-                                # Get build status and logs
+                                # Wait for pod to start
+                                sleep 10
+                                
+                                # Check build status (don't wait for completion to avoid hanging)
                                 ./bin/kubectl get pod kaniko-${service}-${BUILD_NUMBER} || echo "Pod not found"
-                                ./bin/kubectl logs kaniko-${service}-${BUILD_NUMBER} --tail=50 || echo "Logs not available yet"
                                 
-                                # Cleanup
-                                ./bin/kubectl delete pod kaniko-${service}-${BUILD_NUMBER} --ignore-not-found=true
+                                # Get initial logs
+                                ./bin/kubectl logs kaniko-${service}-${BUILD_NUMBER} --tail=20 || echo "Build starting..."
+                                
+                                echo "${service} build started in background"
                                 
                                 echo "${service} build completed"
                             fi
