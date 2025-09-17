@@ -171,7 +171,7 @@ EOF
                                 rm -f package-lock.json
                                 npm cache clean --force
                                 npm install
-                                timeout 60 npm test --forceExit || true
+                                timeout 60 npm test -- --forceExit --detectOpenHandles || true
                                 npm run build || true
                             '''
                         }
