@@ -466,7 +466,7 @@ EOF
                         
                         echo "ECR repositories setup completed"
                         
-                        # Install kubectl for Kaniko builds
+                        # Install kubectl
                         echo "Installing kubectl..."
                         curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
                         chmod +x kubectl
@@ -479,49 +479,51 @@ EOF
                             --docker-server=${ECR_REGISTRY} \
                             --docker-username=AWS \
                             --docker-password=$(cat /tmp/ecr-token) \
-                            --dry-run=client -o yaml | ./bin/kubectl apply -f - || echo "Secret already exists"
+                            --dry-run=client -o yaml | ./bin/kubectl apply -f -
                         
                         # Build and push images using Kaniko
-                        echo "Building container images with Kaniko..."
+                        echo "Building and pushing container images..."
                         for service in user-service product-service order-service notification-service; do
                             if [ -f "applications/${service}/Dockerfile" ]; then
-                                echo "Building ${service} with Kaniko..."
+                                echo "Building ${service}..."
                                 
-                                # Create Kaniko job
-                                cat > kaniko-${service}.yaml << EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: kaniko-${service}-${BUILD_NUMBER}
-spec:
-  restartPolicy: Never
-  containers:
-  - name: kaniko
-    image: gcr.io/kaniko-project/executor:latest
-    args:
-    - "--context=git://github.com/imrans297/ECommerce_Platform-Project.git#main"
-    - "--context-sub-path=applications/${service}"
-    - "--dockerfile=applications/${service}/Dockerfile"
-    - "--destination=${ECR_REGISTRY}/${service}:${BUILD_VERSION}"
-    - "--destination=${ECR_REGISTRY}/${service}:latest"
-    - "--cache=true"
-    volumeMounts:
-    - name: docker-config
-      mountPath: /kaniko/.docker
-  volumes:
-  - name: docker-config
-    secret:
-      secretName: ecr-secret
-      items:
-      - key: .dockerconfigjson
-        path: config.json
-EOF
+                                # Create Kaniko build pod
+                                ./bin/kubectl run kaniko-${service}-${BUILD_NUMBER} \
+                                    --rm -i --restart=Never \
+                                    --image=gcr.io/kaniko-project/executor:latest \
+                                    --overrides='{
+                                        "spec": {
+                                            "containers": [{
+                                                "name": "kaniko",
+                                                "image": "gcr.io/kaniko-project/executor:latest",
+                                                "args": [
+                                                    "--context=git://github.com/imrans297/ECommerce_Platform-Project.git#main",
+                                                    "--context-sub-path=applications/'${service}'",
+                                                    "--dockerfile=applications/'${service}'/Dockerfile",
+                                                    "--destination='${ECR_REGISTRY}'/'${service}':'${BUILD_VERSION}'",
+                                                    "--destination='${ECR_REGISTRY}'/'${service}':latest"
+                                                ],
+                                                "volumeMounts": [{
+                                                    "name": "docker-config",
+                                                    "mountPath": "/kaniko/.docker"
+                                                }]
+                                            }],
+                                            "volumes": [{
+                                                "name": "docker-config",
+                                                "secret": {
+                                                    "secretName": "ecr-secret",
+                                                    "items": [{
+                                                        "key": ".dockerconfigjson",
+                                                        "path": "config.json"
+                                                    }]
+                                                }
+                                            }]
+                                        }
+                                    }' -- echo "Building ${service}..."
                                 
-                                # Run Kaniko build
-                                ./bin/kubectl apply -f kaniko-${service}.yaml
-                                ./bin/kubectl wait --for=condition=Ready pod/kaniko-${service}-${BUILD_NUMBER} --timeout=300s || echo "Build timeout for ${service}"
-                                ./bin/kubectl logs kaniko-${service}-${BUILD_NUMBER} || echo "No logs for ${service}"
-                                ./bin/kubectl delete pod kaniko-${service}-${BUILD_NUMBER} --ignore-not-found=true
+                                # Wait for completion and get logs
+                                ./bin/kubectl wait --for=condition=Ready pod/kaniko-${service}-${BUILD_NUMBER} --timeout=600s || echo "Build timeout"
+                                ./bin/kubectl logs kaniko-${service}-${BUILD_NUMBER} || echo "No logs available"
                                 
                                 echo "${service} build completed"
                             fi
