@@ -409,6 +409,10 @@ EOF
         
         stage('🐳 Container Build & Push') {
             steps {
+                script {
+                    // Add Docker group access
+                    sh 'sudo usermod -aG docker jenkins || echo "Docker group already configured"'
+                }
                 withCredentials([
                     string(credentialsId: 'aws-access-key', variable: 'AWS_ACCESS_KEY_ID'),
                     string(credentialsId: 'aws-secret-key', variable: 'AWS_SECRET_ACCESS_KEY')
@@ -464,7 +468,36 @@ EOF
                         done
                         
                         echo "ECR repositories setup completed"
-                        echo "Container builds will be handled by ArgoCD Image Updater or external CI/CD"
+                        
+                        # Login to ECR
+                        echo "Logging into ECR..."
+                        ./bin/aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        
+                        # Build and push container images
+                        echo "Building and pushing container images..."
+                        for service in user-service product-service order-service notification-service; do
+                            if [ -f "applications/${service}/Dockerfile" ]; then
+                                echo "Building ${service}..."
+                                cd applications/${service}
+                                
+                                # Build image
+                                docker build -t ${service}:${BUILD_VERSION} .
+                                docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                docker tag ${service}:${BUILD_VERSION} ${ECR_REGISTRY}/${service}:latest
+                                
+                                # Push image
+                                echo "Pushing ${service} to ECR..."
+                                docker push ${ECR_REGISTRY}/${service}:${BUILD_VERSION}
+                                docker push ${ECR_REGISTRY}/${service}:latest
+                                
+                                echo "${service} pushed successfully"
+                                cd ../..
+                            else
+                                echo "No Dockerfile found for ${service}"
+                            fi
+                        done
+                        
+                        echo "All container images built and pushed successfully"
                     '''
                 }
             }
